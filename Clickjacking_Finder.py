@@ -1,12 +1,19 @@
 # Author: AVII-VERSE
-# CJF - Clickjacking Finder v1.0 | Advanced Multi-Threaded Security Scanner
+# CJF - Clickjacking Finder & Web Security Scanner v1.0
+# High-Performance Multi-Threaded Vulnerability Auditor
 
-import os, sys
+import os
+import sys
+import ssl
+import socket
+import json
+import webbrowser
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from sys import argv, exit
 
 if os.name == 'nt':
@@ -20,16 +27,17 @@ except Exception:
 __author__  = 'AVII-VERSE'
 __version__ = '1.0'
 
-# ── COLORS ──────────────────────────────────────────
-C  = '\033[96m'   # cyan
-G  = '\033[92m'   # green
-Y  = '\033[93m'   # yellow
-R  = '\033[91m'   # red
-M  = '\033[95m'   # magenta
-B  = '\033[94m'   # blue
-BO = '\033[1m'    # bold
-DM = '\033[2m'    # dim
-RS = '\033[0m'    # reset
+# ── ANSI COLORS ─────────────────────────────────────
+C   = '\033[96m'   # Cyan
+G   = '\033[92m'   # Green
+Y   = '\033[93m'   # Yellow
+R   = '\033[91m'   # Red
+M   = '\033[95m'   # Magenta
+B   = '\033[94m'   # Blue
+W   = '\033[97m'   # Bright White
+BO  = '\033[1m'    # Bold
+DM  = '\033[2m'    # Dim
+RS  = '\033[0m'    # Reset
 
 RISK_C = {'CRITICAL': R, 'HIGH': R, 'MEDIUM': Y, 'LOW': C, 'INFO': B}
 RISK_S = {'CRITICAL': 5, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1, 'INFO': 0}
@@ -43,20 +51,26 @@ BANNER = rf"""{C}{BO}
 {M}+====================================================+
 |  {Y}CLICKJACKING FINDER (CJF) v1.0{M}                    |
 |  {B}[*] Author  : {G}AVII-VERSE{M}                            |
-|  {B}[*] Mode    : {G}Advanced Multi-Threaded Scanner{M}        |
-|  {B}[*] Checks  : {G}12 Vulnerability Classes{M}               |
+|  {B}[*] Mode    : {G}Full-Spectrum Vulnerability Auditor{M}    |
+|  {B}[*] Engine  : {G}Multi-Threaded Security Scanner{M}        |
 +====================================================+{RS}
 """
 
 THREADS = 5
-TIMEOUT = 10
-UA = 'Mozilla/5.0 (CJF-Scanner/4.0; Security-Audit)'
+TIMEOUT = 8
+UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 CJF/1.0'
 
 # ═══════════════════════════════════════════════════
-#  INDIVIDUAL CHECK FUNCTIONS
+#  SECURITY AUDIT FUNCTIONS
 # ═══════════════════════════════════════════════════
 
-def chk_clickjacking(hdrs):
+def get_target_ip(host):
+    try:
+        return socket.gethostbyname(host)
+    except Exception:
+        return "Unknown"
+
+def chk_clickjacking(hdrs, full_url):
     xfo = hdrs.get('X-Frame-Options')
     csp = hdrs.get('Content-Security-Policy', '')
     fa  = 'frame-ancestors' in csp.lower() if csp else False
@@ -64,20 +78,22 @@ def chk_clickjacking(hdrs):
         return {
             'id':       'CLICKJACKING',
             'risk':     'HIGH',
-            'name':     'Clickjacking',
-            'evidence': f'X-Frame-Options: NOT PRESENT | CSP frame-ancestors: NOT SET',
-            'root':     'The server sends no framing policy. Any website can embed this page inside an <iframe> tag without restriction.',
-            'impact':   'Attacker embeds this site transparently behind a fake UI. Victim clicks what they think is a prize button but actually submits a form, deletes an account, or transfers funds on the real hidden site.',
+            'name':     'Clickjacking (Missing Framing Protections)',
+            'location': 'HTTP Response Headers -> X-Frame-Options & Content-Security-Policy',
+            'evidence': 'X-Frame-Options: NOT PRESENT | CSP frame-ancestors: NOT SET',
+            'root':     'The server omits framing protection directives. Web browsers allow any external domain to render this webpage inside an <iframe> context.',
+            'impact':   'Attackers can embed this application transparently beneath a decoy user interface on an external website, coercing victims into unknowingly executing state-changing operations (account modification, transaction authorization, data deletion).',
             'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N | Score: 6.1',
-            'fix':      'Add: Content-Security-Policy: frame-ancestors \'none\'\n              OR: X-Frame-Options: DENY',
+            'fix':      "Add the following header to server configuration:\n"
+                        "Nginx:   add_header Content-Security-Policy \"frame-ancestors 'none';\" always;\n"
+                        "Apache:  Header always set Content-Security-Policy \"frame-ancestors 'none';\"\n"
+                        "Express: app.use(helmet.frameguard({ action: 'deny' }));",
             'ref':      'https://owasp.org/www-community/attacks/Clickjacking',
             'poc':      True,
         }
     return None
 
-
-def chk_cors(url, hdrs):
-    # Send a request with attacker Origin and check ACAO response
+def chk_cors_wildcard(hdrs):
     acao = hdrs.get('Access-Control-Allow-Origin', '')
     acac = hdrs.get('Access-Control-Allow-Credentials', '')
     if acao == '*':
@@ -85,38 +101,41 @@ def chk_cors(url, hdrs):
         return {
             'id':       'CORS_WILDCARD',
             'risk':     sev,
-            'name':     'CORS Wildcard Misconfiguration',
-            'evidence': f'Access-Control-Allow-Origin: {acao} | Allow-Credentials: {acac or "not set"}',
-            'root':     'Server reflects Access-Control-Allow-Origin: * allowing any origin to read responses. When combined with credentials=true this becomes critical.',
-            'impact':   'Attacker can make cross-origin AJAX requests from evil.com and read authenticated API responses, stealing session data or private user information.',
-            'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N | Score: 8.2',
-            'fix':      'Whitelist specific origins: Access-Control-Allow-Origin: https://yourdomain.com\n              Never use * with Allow-Credentials: true',
+            'name':     'Insecure CORS Wildcard Header',
+            'location': 'HTTP Response Headers -> Access-Control-Allow-Origin',
+            'evidence': f'Access-Control-Allow-Origin: * | Access-Control-Allow-Credentials: {acac or "Not Set"}',
+            'root':     'The web application implements a blanket wildcard (*) Access-Control-Allow-Origin header instead of validating requested origins.',
+            'impact':   'Arbitrary websites can initiate cross-origin XMLHttpRequests/fetch calls and inspect private application responses if sensitive information is returned on non-credentialed routes.',
+            'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N | Score: 7.2',
+            'fix':      "Remove the wildcard origin. Validate origin headers against a strict server-side whitelist:\n"
+                        "Nginx:   if ($http_origin ~* (https://trusted\\.domain\\.com)) { add_header Access-Control-Allow-Origin $http_origin; }\n"
+                        "Express: app.use(cors({ origin: ['https://trusted.domain.com'], credentials: true }));",
             'ref':      'https://portswigger.net/web-security/cors',
             'poc':      False,
         }
     return None
 
-
-def chk_cors_reflect(url):
-    # Test if server reflects arbitrary Origin (more dangerous than wildcard)
+def chk_cors_reflection(base_url):
     try:
-        req = Request(url, headers={
-            'User-Agent': UA,
-            'Origin': 'https://evil-attacker.com'
-        })
-        resp   = urlopen(req, timeout=TIMEOUT)
-        acao   = resp.info().get('Access-Control-Allow-Origin', '')
-        acac   = resp.info().get('Access-Control-Allow-Credentials', '')
-        if 'evil-attacker.com' in acao:
+        test_origin = 'https://attacker-controlled-context.com'
+        req = Request(base_url, headers={'User-Agent': UA, 'Origin': test_origin})
+        resp = urlopen(req, timeout=TIMEOUT)
+        acao = resp.info().get('Access-Control-Allow-Origin', '')
+        acac = resp.info().get('Access-Control-Allow-Credentials', '')
+        if test_origin in acao:
+            sev = 'CRITICAL' if 'true' in acac.lower() else 'HIGH'
             return {
                 'id':       'CORS_REFLECT',
-                'risk':     'CRITICAL',
-                'name':     'CORS Origin Reflection (Critical)',
-                'evidence': f'Sent Origin: https://evil-attacker.com | Got back ACAO: {acao} | Credentials: {acac}',
-                'root':     'Server reflects any Origin header back in Access-Control-Allow-Origin. Server trusts whatever origin the request claims.',
-                'impact':   'Complete bypass of same-origin policy. Attacker can read any authenticated API response from the victim\'s session — account data, tokens, private messages.',
+                'risk':     sev,
+                'name':     'Arbitrary CORS Origin Reflection',
+                'location': 'Server Origin Validation Logic -> Access-Control-Allow-Origin',
+                'evidence': f'Sent Origin: {test_origin} | Reflected ACAO: {acao} | Allow-Credentials: {acac or "false"}',
+                'root':     'The server dynamically mirrors the incoming request Origin header directly into Access-Control-Allow-Origin without whitelist validation.',
+                'impact':   'Enables complete Same-Origin Policy (SOP) bypass. A malicious domain visited by an authenticated user can read sensitive session data, profile details, and API responses.',
                 'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:N | Score: 9.3',
-                'fix':      'Validate Origin against a strict allowlist. Never reflect arbitrary Origin values.',
+                'fix':      "Never reflect arbitrary request Origin headers. Enforce an immutable whitelist:\n"
+                        "Nginx:   map $http_origin $cors_allowed { default \"\"; \"https://trusted.com\" \"$http_origin\"; }\n"
+                        "Node.js: cors({ origin: function(origin, callback) { if(whitelist.indexOf(origin) !== -1) callback(null, true); } })",
                 'ref':      'https://portswigger.net/web-security/cors/lab-basic-origin-reflection-attack',
                 'poc':      False,
             }
@@ -124,688 +143,805 @@ def chk_cors_reflect(url):
         pass
     return None
 
-
 def chk_cookies(hdrs):
-    raw = hdrs.get('Set-Cookie')
-    if not raw:
+    raw = hdrs.get_all('Set-Cookie') if hasattr(hdrs, 'get_all') else [hdrs.get('Set-Cookie')]
+    if not raw or raw == [None]:
         return None
     issues = []
-    cookies = raw if isinstance(raw, list) else [raw]
-    for ck in cookies:
-        cku = ck.lower()
-        name = ck.split('=')[0].strip()
-        if 'secure' not in cku:
-            issues.append(f'Cookie "{name}": missing Secure flag (sent over HTTP)')
-        if 'httponly' not in cku:
-            issues.append(f'Cookie "{name}": missing HttpOnly flag (readable by JS/XSS)')
-        if 'samesite' not in cku:
-            issues.append(f'Cookie "{name}": missing SameSite flag (CSRF risk)')
+    for ck in raw:
+        if not ck: continue
+        ck_lower = ck.lower()
+        cookie_name = ck.split('=')[0].strip()
+        if 'secure' not in ck_lower:
+            issues.append(f"'{cookie_name}' missing Secure flag (transmitted over cleartext HTTP)")
+        if 'httponly' not in ck_lower:
+            issues.append(f"'{cookie_name}' missing HttpOnly flag (accessible via document.cookie XSS)")
+        if 'samesite' not in ck_lower:
+            issues.append(f"'{cookie_name}' missing SameSite flag (susceptible to CSRF vectors)")
     if issues:
         return {
-            'id':       'COOKIES',
+            'id':       'INSECURE_COOKIE',
             'risk':     'HIGH',
-            'name':     'Insecure Cookie Configuration',
+            'name':     'Insecure Cookie Attributes Missing',
+            'location': 'HTTP Response Headers -> Set-Cookie',
             'evidence': ' | '.join(issues[:3]),
-            'root':     'Session/auth cookies are set without security flags, making them accessible to JavaScript (XSS), sent over plain HTTP, or usable in cross-site request forgery attacks.',
-            'impact':   'Missing HttpOnly: XSS can steal session cookie via document.cookie. Missing Secure: cookie sent in HTTP MITM scenarios. Missing SameSite: CSRF attacks possible.',
-            'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N | Score: 7.1',
-            'fix':      'Set-Cookie: session=xyz; Secure; HttpOnly; SameSite=Strict',
+            'root':     'Session tokens or persistent application state cookies are instantiated without defensive security attributes (Secure, HttpOnly, SameSite).',
+            'impact':   'Missing HttpOnly permits script-driven cookie theft during Cross-Site Scripting (XSS). Missing Secure permits cookie interception over cleartext networks. Missing SameSite facilitates Cross-Site Request Forgery (CSRF).',
+            'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:L/A:N | Score: 7.1',
+            'fix':      "Configure all authentication and session cookies with security flags:\n"
+                        "Set-Cookie: session_id=<token>; Secure; HttpOnly; SameSite=Strict; Path=/;\n"
+                        "Express: res.cookie('session', token, { secure: true, httpOnly: true, sameSite: 'strict' });",
             'ref':      'https://owasp.org/www-community/controls/SecureCookieAttribute',
             'poc':      False,
         }
     return None
 
-
 def chk_hsts(hdrs, url):
     hsts = hdrs.get('Strict-Transport-Security')
-    is_https = url.startswith('https://')
-    if hsts is None and is_https:
+    if url.startswith('https://') and hsts is None:
         return {
-            'id':       'HSTS_MISSING',
+            'id':       'MISSING_HSTS',
             'risk':     'HIGH',
-            'name':     'Missing HSTS (HTTP Strict Transport Security)',
-            'evidence': 'Strict-Transport-Security: NOT PRESENT on HTTPS site',
-            'root':     'Site serves HTTPS but does not tell browsers to always use HTTPS. Users who visit via HTTP are never upgraded automatically.',
-            'impact':   'SSL stripping attack: attacker intercepts HTTP request before redirect, downgrades to plain HTTP, reads/modifies traffic. Works on public WiFi.',
+            'name':     'Missing HTTP Strict Transport Security (HSTS)',
+            'location': 'HTTP Response Headers -> Strict-Transport-Security',
+            'evidence': 'Strict-Transport-Security: NOT PRESENT on HTTPS endpoint',
+            'root':     'The server serves content securely via HTTPS but does not mandate modern browsers to strictly enforce HTTPS connections on future requests.',
+            'impact':   'Leaves end users susceptible to SSL Stripping and active Man-in-the-Middle (MITM) downgrade attacks over unsecured public networks.',
             'cvss':     'CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:N | Score: 6.8',
-            'fix':      'Strict-Transport-Security: max-age=31536000; includeSubDomains; preload',
+            'fix':      "Enable HSTS with a minimum max-age duration of one year (31536000 seconds):\n"
+                        "Nginx:   add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains; preload\" always;\n"
+                        "Apache:  Header always set Strict-Transport-Security \"max-age=31536000; includeSubDomains; preload\"",
             'ref':      'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security',
             'poc':      False,
         }
     elif hsts:
-        # Check for weak max-age
         try:
-            age = int([p for p in hsts.split(';') if 'max-age' in p][0].split('=')[1].strip())
-            if age < 2592000:  # less than 30 days
-                return {
-                    'id':       'HSTS_WEAK',
-                    'risk':     'MEDIUM',
-                    'name':     'Weak HSTS Configuration',
-                    'evidence': f'Strict-Transport-Security: {hsts} | max-age={age} (< 30 days)',
-                    'root':     'HSTS max-age is too short. Browser will forget the HSTS rule quickly and may allow HTTP connections again.',
-                    'impact':   'Short window where SSL stripping attacks are possible after HSTS expiry.',
-                    'cvss':     'CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:M/I:M/A:N | Score: 4.2',
-                    'fix':      'Strict-Transport-Security: max-age=31536000; includeSubDomains',
-                    'ref':      'https://hstspreload.org/',
-                    'poc':      False,
-                }
+            parts = [p.strip().lower() for p in hsts.split(';')]
+            max_age_part = [p for p in parts if p.startswith('max-age=')]
+            if max_age_part:
+                age = int(max_age_part[0].split('=')[1])
+                if age < 15552000: # Less than 180 days
+                    return {
+                        'id':       'WEAK_HSTS',
+                        'risk':     'MEDIUM',
+                        'name':     'Weak HSTS max-age Duration',
+                        'location': 'HTTP Response Headers -> Strict-Transport-Security',
+                        'evidence': f'Strict-Transport-Security: {hsts} (max-age is {age}s, recommended >= 31536000s)',
+                        'root':     'The configured max-age parameter is too short to provide persistent HTTPS enforcement.',
+                        'impact':   'Reduces protection window against protocol downgrade and SSL stripping attacks.',
+                        'cvss':     'CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:L/A:N | Score: 4.2',
+                        'fix':      'Increase HSTS duration to at least 31536000 seconds (1 year) and includeSubDomains.',
+                        'ref':      'https://hstspreload.org/',
+                        'poc':      False,
+                    }
         except Exception:
             pass
     return None
-
 
 def chk_csp(hdrs):
     csp = hdrs.get('Content-Security-Policy')
     if csp is None:
         return {
-            'id':       'CSP_MISSING',
+            'id':       'MISSING_CSP',
             'risk':     'HIGH',
-            'name':     'No Content Security Policy',
+            'name':     'Missing Content Security Policy (CSP)',
+            'location': 'HTTP Response Headers -> Content-Security-Policy',
             'evidence': 'Content-Security-Policy: NOT PRESENT',
-            'root':     'Without a CSP, browsers will execute any inline script and load resources from any origin. There is no defence against XSS injection.',
-            'impact':   'If any input is reflected without encoding, attacker injects <script> tags. Browser executes them freely — cookie theft, keyloggers, crypto miners, page defacement.',
+            'root':     'The web server does not deliver a Content Security Policy header to restrict executable resource sources.',
+            'impact':   'Eliminates second-line browser defenses against Cross-Site Scripting (XSS), malicious script injection, and clickjacking attacks.',
             'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:N | Score: 8.8',
-            'fix':      "Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none'",
+            'fix':      "Deploy a restrictive CSP header specifying trusted origins:\n"
+                        "Nginx: add_header Content-Security-Policy \"default-src 'self'; script-src 'self'; object-src 'none';\" always;\n"
+                        "Apache: Header always set Content-Security-Policy \"default-src 'self'; script-src 'self'; object-src 'none';\"",
             'ref':      'https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP',
             'poc':      False,
         }
     issues = []
     csp_l = csp.lower()
     if "'unsafe-inline'" in csp_l:
-        issues.append("'unsafe-inline' allows inline scripts (XSS risk)")
+        issues.append("'unsafe-inline' directive permits arbitrary inline JavaScript execution")
     if "'unsafe-eval'" in csp_l:
-        issues.append("'unsafe-eval' allows eval() (code injection risk)")
+        issues.append("'unsafe-eval' directive permits dynamic string-to-code execution")
     if 'data:' in csp_l:
-        issues.append("'data:' URI scheme allows data: based XSS")
-    if '*' in csp and 'report' not in csp_l:
-        issues.append("Wildcard (*) in source allows loading from anywhere")
+        issues.append("'data:' URI scheme allows arbitrary base64 payload injection")
     if issues:
         return {
-            'id':       'CSP_UNSAFE',
+            'id':       'WEAK_CSP',
             'risk':     'MEDIUM',
-            'name':     'Unsafe Content Security Policy',
+            'name':     'Permissive Content Security Policy Directives',
+            'location': 'HTTP Response Headers -> Content-Security-Policy',
             'evidence': ' | '.join(issues),
-            'root':     f'CSP exists but contains unsafe directives. Full CSP: {csp[:120]}',
-            'impact':   'Unsafe directives defeat the purpose of CSP. Attacker can still inject and run scripts if an XSS entry point exists.',
+            'root':     f'Configured CSP contains insecure exceptions allowing unverified code execution: {csp[:90]}...',
+            'impact':   'Allows script injection payloads to bypass CSP filters if an injection point exists in the application.',
             'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:M/I:M/A:N | Score: 6.1',
-            'fix':      "Remove 'unsafe-inline', 'unsafe-eval'. Use nonces or hashes instead.",
+            'fix':      "Remove 'unsafe-inline' and 'unsafe-eval'. Migrate to cryptographic nonces or hashes (e.g., 'nonce-random123').",
             'ref':      'https://csp-evaluator.withgoogle.com/',
             'poc':      False,
         }
     return None
 
-
-def chk_info_disclosure(hdrs):
-    findings = []
-    srv = hdrs.get('Server', '')
-    if srv and any(c.isdigit() for c in srv):
-        findings.append(f'Server: {srv} (version exposed)')
-    xpb = hdrs.get('X-Powered-By', '')
-    if xpb:
-        findings.append(f'X-Powered-By: {xpb} (tech stack exposed)')
-    xav = hdrs.get('X-AspNet-Version') or hdrs.get('X-AspNetMvc-Version')
-    if xav:
-        findings.append(f'ASP.NET version: {xav}')
-    xgen = hdrs.get('X-Generator')
-    if xgen:
-        findings.append(f'X-Generator: {xgen}')
-    if findings:
-        return {
-            'id':       'INFO_DISCLOSURE',
-            'risk':     'MEDIUM',
-            'name':     'Technology/Version Disclosure',
-            'evidence': ' | '.join(findings),
-            'root':     'HTTP response headers reveal the server software, version, or framework. This is trivially readable by anyone with browser dev tools.',
-            'impact':   'Attacker identifies exact software versions and searches for known CVEs. Targeted exploits for unpatched vulnerabilities become trivial.',
-            'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N | Score: 5.3',
-            'fix':      'Apache: ServerTokens Prod | Nginx: server_tokens off | IIS: remove X-Powered-By',
-            'ref':      'https://owasp.org/www-project-web-security-testing-guide/v42/4-Web_Application_Security_Testing/01-Information_Gathering/02-Fingerprint_Web_Server',
-            'poc':      False,
-        }
-    return None
-
-
-def chk_xcto(hdrs):
-    xcto = hdrs.get('X-Content-Type-Options', '')
-    if 'nosniff' not in xcto.lower():
-        return {
-            'id':       'XCTO',
-            'risk':     'MEDIUM',
-            'name':     'Missing X-Content-Type-Options',
-            'evidence': f'X-Content-Type-Options: {xcto or "NOT PRESENT"}',
-            'root':     'Browser will sniff (guess) the content type of responses. A response served as text/plain can be re-interpreted as text/html and executed.',
-            'impact':   'MIME-confusion XSS: attacker uploads a file with embedded script. Browser ignores the text/plain content-type and executes it as HTML.',
-            'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:M/I:M/A:N | Score: 6.1',
-            'fix':      'X-Content-Type-Options: nosniff',
-            'ref':      'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options',
-            'poc':      False,
-        }
-    return None
-
-
-def chk_referrer(hdrs):
-    rp = hdrs.get('Referrer-Policy')
-    if rp is None:
-        return {
-            'id':       'REFERRER',
-            'risk':     'LOW',
-            'name':     'Missing Referrer-Policy',
-            'evidence': 'Referrer-Policy: NOT PRESENT',
-            'root':     'Browser sends full URL in Referer header to every external site. If URLs contain session IDs, tokens, or sensitive paths, they leak to third-party analytics/CDN servers.',
-            'impact':   'Private URL parameters (password reset tokens, API keys in URLs) exposed in server logs of third-party sites.',
-            'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:N/A:N | Score: 4.3',
-            'fix':      'Referrer-Policy: strict-origin-when-cross-origin',
-            'ref':      'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Referrer-Policy',
-            'poc':      False,
-        }
-    return None
-
-
-def chk_permissions(hdrs):
-    pp = hdrs.get('Permissions-Policy') or hdrs.get('Feature-Policy')
-    if pp is None:
-        return {
-            'id':       'PERMISSIONS',
-            'risk':     'LOW',
-            'name':     'Missing Permissions-Policy',
-            'evidence': 'Permissions-Policy: NOT PRESENT',
-            'root':     'No restrictions on what browser features embedded iframes can access. Third-party scripts and iframes can request camera, microphone, geolocation.',
-            'impact':   'Malicious third-party script or ad can request camera/microphone access through the site\'s trusted origin without user realising the request comes from an attacker.',
-            'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:N/A:N | Score: 4.7',
-            'fix':      'Permissions-Policy: camera=(), microphone=(), geolocation=()',
-            'ref':      'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy',
-            'poc':      False,
-        }
-    return None
-
-
-def chk_http_redirect(site_url):
-    # Check if HTTP redirects to HTTPS
-    http_url = 'http://' + site_url.replace('https://','').replace('http://','')
+def chk_http_methods(base_url):
     try:
-        import urllib.request
-        class NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, *args): return None
-        opener = urllib.request.build_opener(NoRedirect)
-        opener.open(http_url, timeout=6)
-        # If we get here, site served HTTP without redirect
-        return {
-            'id':       'NO_HTTPS_REDIRECT',
-            'risk':     'HIGH',
-            'name':     'HTTP Site — No HTTPS Redirect',
-            'evidence': f'{http_url} served response without redirecting to HTTPS',
-            'root':     'Site serves content over plain HTTP. All traffic including cookies and credentials is transmitted without encryption.',
-            'impact':   'Full traffic interception. Attacker on same network can read passwords, session tokens, and all page content in plaintext.',
-            'cvss':     'CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N | Score: 7.4',
-            'fix':      'Force HTTPS redirect on server. Obtain TLS certificate via Let\'s Encrypt (free).',
-            'ref':      'https://letsencrypt.org/',
-            'poc':      False,
-        }
-    except HTTPError as e:
-        if e.code in (301, 302, 307, 308):
-            loc = e.headers.get('Location', '')
-            if 'https://' not in loc:
+        req = Request(base_url, headers={'User-Agent': UA}, method='OPTIONS')
+        resp = urlopen(req, timeout=TIMEOUT)
+        allow = resp.info().get('Allow', '') or resp.info().get('Public', '')
+        if allow:
+            methods = [m.strip().upper() for m in allow.split(',')]
+            dangerous = [m for m in methods if m in ['TRACE', 'TRACK', 'PUT', 'DELETE']]
+            if 'TRACE' in dangerous or 'TRACK' in dangerous:
                 return {
-                    'id':       'HTTP_REDIRECT_HTTP',
+                    'id':       'HTTP_TRACE',
+                    'risk':     'HIGH',
+                    'name':     'Cross-Site Tracing (HTTP TRACE Method Enabled)',
+                    'location': f'Web Server Method Dispatcher -> {allow}',
+                    'evidence': f'Allow / Public Header: {allow}',
+                    'root':     'The web server enables HTTP TRACE / TRACK methods, which reflect request headers back in the response body.',
+                    'impact':   'Enables Cross-Site Tracing (XST) attacks. An attacker executing XSS can bypass HttpOnly cookie defenses by issuing a TRACE request and reading the reflected cookie string.',
+                    'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N | Score: 6.5',
+                    'fix':      "Disable TRACE and TRACK methods on the web server:\n"
+                                "Apache: TraceEnable off\n"
+                                "Nginx:  if ($request_method ~ ^(TRACE|TRACK)$) { return 405; }",
+                    'ref':      'https://owasp.org/www-community/attacks/Cross_Site_Tracing',
+                    'poc':      False,
+                }
+            elif dangerous:
+                return {
+                    'id':       'DANGEROUS_METHODS',
                     'risk':     'MEDIUM',
-                    'name':     'HTTP Redirects to HTTP (Not HTTPS)',
-                    'evidence': f'HTTP 301/302 Location: {loc} (still HTTP)',
-                    'root':     'Site redirects from HTTP but target is also HTTP. Encryption is never enforced.',
-                    'impact':   'Same as no HTTPS — all traffic readable in plaintext.',
-                    'cvss':     'CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N | Score: 7.4',
-                    'fix':      'Redirect HTTP to https:// URL.',
-                    'ref':      'https://letsencrypt.org/',
+                    'name':     'Potentially Dangerous HTTP Methods Enabled',
+                    'location': f'Web Server Method Dispatcher -> {allow}',
+                    'evidence': f'Enabled Methods: {", ".join(dangerous)}',
+                    'root':     'The web server allows state-modifying HTTP verbs (PUT, DELETE) on root endpoints.',
+                    'impact':   'If permissions or authentication barriers fail, unauthorized users might attempt arbitrary resource modification or deletion.',
+                    'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:L | Score: 5.3',
+                    'fix':      "Restrict HTTP methods to GET, POST, HEAD unless explicitly required:\n"
+                                "Nginx: if ($request_method !~ ^(GET|POST|HEAD)$) { return 405; }",
+                    'ref':      'https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods',
                     'poc':      False,
                 }
     except Exception:
         pass
     return None
 
+def chk_sensitive_files(base_url):
+    findings = []
+    parsed = urlparse(base_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    
+    # 1. Check .env file
+    try:
+        req = Request(f"{origin}/.env", headers={'User-Agent': UA})
+        resp = urlopen(req, timeout=TIMEOUT)
+        if resp.status == 200:
+            content = resp.read(512).decode('utf-8', errors='ignore')
+            if '=' in content and any(k in content.upper() for k in ['DB_', 'SECRET', 'PASSWORD', 'API_KEY', 'APP_KEY']):
+                findings.append({
+                    'id':       'EXPOSED_ENV',
+                    'risk':     'CRITICAL',
+                    'name':     'Exposed Environment Configuration File (.env)',
+                    'location': f'{origin}/.env',
+                    'evidence': f'HTTP 200 OK | File contains sensitive environment assignments: {content[:80]}...',
+                    'root':     'The .env file is stored directly within the public web document root without server-level access restrictions.',
+                    'impact':   'Complete infrastructure compromise. Attackers can read database credentials, private API keys, cryptographic secrets, and internal endpoints.',
+                    'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H | Score: 10.0',
+                    'fix':      "Move .env outside public webroot. Deny access via server config:\n"
+                                "Nginx: location ~ /\\.env { deny all; return 404; }\n"
+                                "Apache: <Files \".env\"> Require all denied </Files>",
+                    'ref':      'https://cwe.mitre.org/data/definitions/552.html',
+                    'poc':      False,
+                })
+    except Exception:
+        pass
+
+    # 2. Check .git/HEAD
+    try:
+        req = Request(f"{origin}/.git/HEAD", headers={'User-Agent': UA})
+        resp = urlopen(req, timeout=TIMEOUT)
+        if resp.status == 200:
+            content = resp.read(128).decode('utf-8', errors='ignore').strip()
+            if content.startswith('ref: refs/') or len(content) == 40:
+                findings.append({
+                    'id':       'EXPOSED_GIT',
+                    'risk':     'CRITICAL',
+                    'name':     'Exposed Git Repository Root (.git/HEAD)',
+                    'location': f'{origin}/.git/HEAD',
+                    'evidence': f'HTTP 200 OK | Content: {content}',
+                    'root':     'The .git version control repository was deployed to production and remains accessible over HTTP.',
+                    'impact':   'Attackers can extract the entire source code repository, commit history, hardcoded credentials, and architectural secrets using tools like git-dumper.',
+                    'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N | Score: 8.6',
+                    'fix':      "Block all requests targeting hidden dotfiles:\n"
+                                "Nginx: location ~ /\\.git { deny all; return 404; }\n"
+                                "Apache: <DirectoryMatch \"/\\.git\"> Require all denied </DirectoryMatch>",
+                    'ref':      'https://owasp.org/www-project-web-security-testing-guide/v42/4-Web_Application_Security_Testing/02-Configuration_and_Deployment_Management_Testing/05-Enumerate_Infrastructure',
+                    'poc':      False,
+                })
+    except Exception:
+        pass
+
+    # 3. Check robots.txt for sensitive endpoints
+    try:
+        req = Request(f"{origin}/robots.txt", headers={'User-Agent': UA})
+        resp = urlopen(req, timeout=TIMEOUT)
+        if resp.status == 200:
+            txt = resp.read(2048).decode('utf-8', errors='ignore')
+            disallowed = []
+            for line in txt.splitlines():
+                if line.lower().startswith('disallow:'):
+                    path = line.split(':', 1)[1].strip()
+                    if any(s in path.lower() for s in ['admin', 'api', 'backup', 'secret', 'dashboard', 'internal', 'staging', 'portal']):
+                        disallowed.append(path)
+            if disallowed:
+                findings.append({
+                    'id':       'ROBOTS_DISCLOSURE',
+                    'risk':     'LOW',
+                    'name':     'Sensitive Internal Paths Disclosed in robots.txt',
+                    'location': f'{origin}/robots.txt',
+                    'evidence': f'Disclosed Paths: {", ".join(disallowed[:5])}',
+                    'root':     'Web administrators listed private administration or internal API endpoints inside public robots.txt files.',
+                    'impact':   'Facilitates target reconnaissance. Attackers identify hidden admin panels, staging servers, and internal entry points without brute-forcing.',
+                    'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N | Score: 3.7',
+                    'fix':      "Do not rely on robots.txt for security. Protect private endpoints with server-level authentication and network firewall ACLs.",
+                    'ref':      'https://developer.mozilla.org/en-US/docs/Glossary/Robots.txt',
+                    'poc':      False,
+                })
+    except Exception:
+        pass
+
+    return findings
+
+def chk_mime_sniffing(hdrs):
+    xcto = hdrs.get('X-Content-Type-Options', '')
+    if 'nosniff' not in xcto.lower():
+        return {
+            'id':       'MIME_SNIFFING',
+            'risk':     'MEDIUM',
+            'name':     'Missing X-Content-Type-Options (MIME Sniffing)',
+            'location': 'HTTP Response Headers -> X-Content-Type-Options',
+            'evidence': f'X-Content-Type-Options: {xcto or "NOT PRESENT"}',
+            'root':     'The server fails to instruct user agents to honor the declared Content-Type header without sniffing.',
+            'impact':   'Permits MIME-confusion attacks. Browsers may execute benign text or user-uploaded media files as HTML/JavaScript if script elements are detected.',
+            'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:M/I:M/A:N | Score: 6.1',
+            'fix':      "Add nosniff header across all responses:\n"
+                        "Nginx:  add_header X-Content-Type-Options \"nosniff\" always;\n"
+                        "Apache: Header always set X-Content-Type-Options \"nosniff\"",
+            'ref':      'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options',
+            'poc':      False,
+        }
+    return None
+
+def chk_referrer_policy(hdrs):
+    rp = hdrs.get('Referrer-Policy')
+    if rp is None:
+        return {
+            'id':       'MISSING_REFERRER',
+            'risk':     'LOW',
+            'name':     'Missing Referrer-Policy',
+            'location': 'HTTP Response Headers -> Referrer-Policy',
+            'evidence': 'Referrer-Policy: NOT PRESENT',
+            'root':     'The application does not declare how much referrer information should be transmitted on outbound requests.',
+            'impact':   'Full target URLs (which may contain sensitive query tokens, IDs, or reset keys) may leak to external third-party CDN or analytics servers.',
+            'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:N/A:N | Score: 4.3',
+            'fix':      "Enforce strict-origin-when-cross-origin:\n"
+                        "Nginx:  add_header Referrer-Policy \"strict-origin-when-cross-origin\" always;\n"
+                        "Apache: Header always set Referrer-Policy \"strict-origin-when-cross-origin\"",
+            'ref':      'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Referrer-Policy',
+            'poc':      False,
+        }
+    return None
+
+def chk_permissions_policy(hdrs):
+    pp = hdrs.get('Permissions-Policy') or hdrs.get('Feature-Policy')
+    if pp is None:
+        return {
+            'id':       'MISSING_PERMISSIONS',
+            'risk':     'LOW',
+            'name':     'Missing Permissions-Policy',
+            'location': 'HTTP Response Headers -> Permissions-Policy',
+            'evidence': 'Permissions-Policy: NOT PRESENT',
+            'root':     'No browser hardware feature controls (camera, microphone, geolocation) are defined for iframe contexts.',
+            'impact':   'Embedded third-party scripts or frames can access sensitive browser hardware APIs within the origin context.',
+            'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:N/A:N | Score: 4.7',
+            'fix':      "Define a restrictive Permissions-Policy header:\n"
+                        "add_header Permissions-Policy \"camera=(), microphone=(), geolocation=()\" always;",
+            'ref':      'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy',
+            'poc':      False,
+        }
+    return None
+
+def chk_server_disclosure(hdrs):
+    disclosed = []
+    srv = hdrs.get('Server', '')
+    if srv and any(c.isdigit() for c in srv):
+        disclosed.append(f"Server: {srv}")
+    xpb = hdrs.get('X-Powered-By', '')
+    if xpb:
+        disclosed.append(f"X-Powered-By: {xpb}")
+    if disclosed:
+        return {
+            'id':       'SERVER_DISCLOSURE',
+            'risk':     'LOW',
+            'name':     'Web Server & Technology Banner Disclosure',
+            'location': 'HTTP Response Headers -> Server / X-Powered-By',
+            'evidence': ' | '.join(disclosed),
+            'root':     'The web server broadcasts granular software names and version numbers in HTTP responses.',
+            'impact':   'Aids threat actors during technology profiling. Specific software releases can be mapped to public CVE databases for targeted exploit execution.',
+            'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N | Score: 5.3',
+            'fix':      "Disable banner emission in web server configs:\n"
+                        "Nginx:  server_tokens off;\n"
+                        "Apache: ServerTokens Prod; ServerSignature Off;\n"
+                        "Express: app.disable('x-powered-by');",
+            'ref':      'https://owasp.org/www-project-web-security-testing-guide/v42/4-Web_Application_Security_Testing/01-Information_Gathering/02-Fingerprint_Web_Server',
+            'poc':      False,
+        }
+    return None
+
+def chk_ssl_certificate(host):
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((host, 443), timeout=TIMEOUT) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                cert = ssock.getpeercert()
+                not_after = cert.get('notAfter')
+                if not_after:
+                    exp_date = datetime.strptime(not_after, '%b %d %H:%M:%S %Y %Z').replace(tzinfo=timezone.utc)
+                    now_utc = datetime.now(timezone.utc)
+                    days_left = (exp_date - now_utc).days
+                    if days_left < 14:
+                        sev = 'CRITICAL' if days_left <= 0 else 'HIGH'
+                        return {
+                            'id':       'SSL_EXPIRING',
+                            'risk':     sev,
+                            'name':     'SSL/TLS Certificate Expired or Expiring Soon',
+                            'location': f'{host}:443 (TLS Handshake)',
+                            'evidence': f'Certificate Expiry: {not_after} ({days_left} days remaining)',
+                            'root':     'The SSL/TLS certificate is either expired or within the critical 14-day renewal threshold.',
+                            'impact':   'Expired certificates trigger browser security warnings, breaking encrypted communications and undermining client trust.',
+                            'cvss':     'CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:N | Score: 7.5',
+                            'fix':      'Renew SSL/TLS certificate immediately through Certbot or your Certificate Authority.',
+                            'ref':      'https://letsencrypt.org/',
+                            'poc':      False,
+                        }
+    except ssl.SSLCertVerificationError as e:
+        return {
+            'id':       'SSL_INVALID',
+            'risk':     'HIGH',
+            'name':     'Invalid or Self-Signed SSL/TLS Certificate',
+            'location': f'{host}:443 (TLS Handshake)',
+            'evidence': f'SSL Verification Error: {str(e)}',
+            'root':     'The TLS certificate chain cannot be verified by trusted root authorities.',
+            'impact':   'Users receive invalid certificate warnings; active adversaries on public Wi-Fi can easily intercept traffic using forged certificates.',
+            'cvss':     'CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:H/A:N | Score: 7.4',
+            'fix':      'Install a valid certificate issued by a recognized Certificate Authority (e.g., Let\'s Encrypt).',
+            'ref':      'https://letsencrypt.org/',
+            'poc':      False,
+        }
+    except Exception:
+        pass
+    return None
 
 # ═══════════════════════════════════════════════════
-#  MAIN SCAN FUNCTION (one site)
+#  SCAN ENGINE WORKER
 # ═══════════════════════════════════════════════════
-def scan_site(raw_url):
+
+def scan_target(raw_url):
     url = raw_url.strip()
     if not url.startswith('http'):
         url = 'https://' + url
 
+    parsed = urlparse(url)
+    host = parsed.netloc.split(':')[0]
+    target_ip = get_target_ip(host)
+    
     findings = []
+    t_start = datetime.now()
 
     try:
-        req  = Request(url, headers={'User-Agent': UA})
+        req = Request(url, headers={'User-Agent': UA})
         resp = urlopen(req, timeout=TIMEOUT)
         hdrs = resp.info()
+        status_code = resp.status
         final_url = resp.geturl()
     except HTTPError as e:
-        hdrs      = e.headers
+        hdrs = e.headers
+        status_code = e.code
         final_url = url
     except Exception as e:
-        return raw_url, url, [], str(e), None
+        return raw_url, url, target_ip, 0, 0, [], str(e), {}
 
-    # Run all header-based checks
-    for fn in [
-        lambda h: chk_clickjacking(h),
-        lambda h: chk_cors(url, h),
-        lambda h: chk_cookies(h),
-        lambda h: chk_hsts(h, url),
-        lambda h: chk_csp(h),
-        lambda h: chk_info_disclosure(h),
-        lambda h: chk_xcto(h),
-        lambda h: chk_referrer(h),
-        lambda h: chk_permissions(h),
-    ]:
-        r = fn(hdrs)
-        if r:
-            findings.append(r)
+    latency_ms = int((datetime.now() - t_start).total_seconds() * 1000)
 
-    # CORS reflect (separate request)
-    cr = chk_cors_reflect(url)
-    if cr:
-        findings.append(cr)
+    # 1. Header Assessments
+    checks = [
+        chk_clickjacking(hdrs, final_url),
+        chk_cors_wildcard(hdrs),
+        chk_cookies(hdrs),
+        chk_hsts(hdrs, final_url),
+        chk_csp(hdrs),
+        chk_mime_sniffing(hdrs),
+        chk_referrer_policy(hdrs),
+        chk_permissions_policy(hdrs),
+        chk_server_disclosure(hdrs)
+    ]
+    for c in checks:
+        if c: findings.append(c)
 
-    # HTTP redirect check
-    hr = chk_http_redirect(raw_url)
-    if hr:
-        findings.append(hr)
+    # 2. CORS Reflection
+    c_ref = chk_cors_reflection(final_url)
+    if c_ref: findings.append(c_ref)
 
-    # Collect all headers for evidence
-    header_dump = dict(hdrs)
+    # 3. HTTP Methods
+    c_meth = chk_http_methods(final_url)
+    if c_meth: findings.append(c_meth)
 
-    return raw_url, final_url, findings, None, header_dump
+    # 4. Sensitive Files
+    c_files = chk_sensitive_files(final_url)
+    findings.extend(c_files)
 
+    # 5. SSL/TLS Certificate
+    if final_url.startswith('https://'):
+        c_ssl = chk_ssl_certificate(host)
+        if c_ssl: findings.append(c_ssl)
+
+    header_dict = dict(hdrs)
+    return raw_url, final_url, target_ip, status_code, latency_ms, findings, None, header_dict
 
 # ═══════════════════════════════════════════════════
-#  SCORING
+#  SCORING UTILITIES
 # ═══════════════════════════════════════════════════
-def score_findings(findings):
+
+def calc_score(findings):
     return sum(RISK_S.get(f['risk'], 0) for f in findings)
 
-def overall_label(score, count):
-    if score >= 10 or any(f == 'CRITICAL' for f in [x['risk'] for x in []]):
-        return 'CRITICAL', R
-    if score >= 6:  return 'HIGH',     R
-    if score >= 3:  return 'MEDIUM',   Y
-    if score >= 1:  return 'LOW',      C
+def get_overall_risk(score):
+    if score >= 12: return 'CRITICAL', R
+    if score >= 7:  return 'HIGH', R
+    if score >= 3:  return 'MEDIUM', Y
+    if score >= 1:  return 'LOW', C
     return 'SECURE', G
-
-def overall_label_from_score(score):
-    if score >= 10: return 'CRITICAL', R
-    if score >= 6:  return 'HIGH',     R
-    if score >= 3:  return 'MEDIUM',   Y
-    if score >= 1:  return 'LOW',      C
-    return 'SECURE', G
-
 
 # ═══════════════════════════════════════════════════
 #  TERMINAL PRINTER
 # ═══════════════════════════════════════════════════
+
 def print_banner():
     print(BANNER)
 
-def print_finding(f, idx):
-    rc = RISK_C.get(f['risk'], C)
-    print(f"  {BO}[{idx}]{RS} {rc}{BO}[{f['risk']}]{RS} {BO}{f['name']}{RS}")
-    print(f"       {DM}Evidence   :{RS} {f['evidence'][:90]}")
-    print(f"       {DM}Root Cause :{RS} {f['root'][:90]}")
-    print(f"       {DM}Impact     :{RS} {f['impact'][:90]}")
-    print(f"       {DM}CVSS       :{RS} {DM}{f['cvss']}{RS}")
-    print()
+def print_target_result(idx, total, raw_url, final_url, ip, status, latency, findings, err):
+    div = "=" * 62
+    sub = "-" * 62
+    print(f"\n{C}{BO}{div}{RS}")
+    print(f"{W}{BO}[{idx}/{total}] TARGET:{RS} {C}{BO}{raw_url}{RS}")
+    print(f"{C}{BO}{div}{RS}")
+    
+    if err:
+        print(f"  {R}[ERROR]{RS} Unable to connect to host: {err}\n")
+        return
 
-def print_site_header(idx, total, site):
-    bar = '=' * 60
-    print(f"\n{C}{BO}{bar}{RS}")
-    print(f"{C}{BO}  [{idx}/{total}] TARGET: {site}{RS}")
-    print(f"{C}{BO}{bar}{RS}")
+    score = calc_score(findings)
+    risk_label, risk_color = get_overall_risk(score)
 
+    print(f"  {DM}Address :{RS} {W}{ip}{RS} | {DM}Status :{RS} {G}{status} OK{RS} | {DM}Latency :{RS} {latency}ms")
+    print(f"  {DM}Endpoint:{RS} {final_url}")
+    print(f"  {DM}Posture :{RS} {risk_color}{BO}{risk_label}{RS} (Score: {score}) | {W}{len(findings)} Total Finding(s){RS}")
+    print(f"{DM}{sub}{RS}")
 
-# ═══════════════════════════════════════════════════
-#  HTML REPORT GENERATOR
-# ═══════════════════════════════════════════════════
-def build_report(raw_url, final_url, findings, header_dump, scan_time):
-    safe = raw_url.replace('https://','').replace('http://','').replace('/','_')
-    fname = safe + '_cjf_report.html'
+    if not findings:
+        print(f"  {G}{BO}[PASS]{RS} No critical misconfigurations detected on checked endpoints.\n")
+        return
 
-    score = score_findings(findings)
-    lbl, _ = overall_label_from_score(score)
-
-    oc = {'CRITICAL':'#ff2244','HIGH':'#ff4444','MEDIUM':'#ffcc00','LOW':'#00ccff','SECURE':'#00ff99'}.get(lbl,'#aaa')
-
-    # Vuln table rows
-    trows = ''
     for i, f in enumerate(findings, 1):
-        rc = {'CRITICAL':'#ff2244','HIGH':'#ff4444','MEDIUM':'#ffcc00','LOW':'#00ccff'}.get(f['risk'],'#aaa')
-        trows += (
-            f'<tr onclick="showDetail({i-1})" style="cursor:pointer">'
-            f'<td><span class="b" style="background:{rc};color:#000">{f["risk"]}</span></td>'
-            f'<td><b>{f["name"]}</b></td>'
-            f'<td class="ev">{f["evidence"][:80]}</td>'
-            f'<td class="ev">{f["cvss"].split("|")[1].strip() if "|" in f["cvss"] else ""}</td>'
-            f'</tr>'
-        )
+        rc = RISK_C.get(f['risk'], C)
+        print(f"  {BO}#{i} {rc}[{f['risk']}]{RS} {W}{BO}{f['name']}{RS}")
+        print(f"     {DM}Location   :{RS} {f['location']}")
+        print(f"     {DM}Evidence   :{RS} {f['evidence']}")
+        print(f"     {DM}Root Cause :{RS} {f['root'][:100]}...")
+        print(f"     {DM}Remediation:{RS} {G}{f['fix'].splitlines()[0]}{RS}")
+        print()
 
-    # Detail panels
-    dpanels = ''
-    for i, f in enumerate(findings):
-        rc = {'CRITICAL':'#ff2244','HIGH':'#ff4444','MEDIUM':'#ffcc00','LOW':'#00ccff'}.get(f['risk'],'#aaa')
-        fix_html = f['fix'].replace('\n','<br>')
-        dpanels += f'''
-<div class="dp" id="dp{i}">
-  <div class="dh" style="border-left:4px solid {rc}">
-    <span class="b" style="background:{rc};color:#000">{f["risk"]}</span>
-    <strong style="font-size:15px">{f["name"]}</strong>
-    <span class="cvss-pill">{f["cvss"].split("|")[1].strip() if "|" in f["cvss"] else ""}</span>
-  </div>
-  <div class="db">
-    <div class="dr"><span class="dk">Evidence</span>
-      <code class="ev-code">{f["evidence"]}</code></div>
-    <div class="dr"><span class="dk">Root Cause</span>
-      <span class="dv">{f["root"]}</span></div>
-    <div class="dr"><span class="dk">Real Impact</span>
-      <span class="dv red">{f["impact"]}</span></div>
-    <div class="dr"><span class="dk">CVSS</span>
-      <span class="dv dim">{f["cvss"]}</span></div>
-    <div class="dr"><span class="dk">Fix</span>
-      <code class="fix-code">{fix_html}</code></div>
-    <div class="dr"><span class="dk">Reference</span>
-      <a href="{f["ref"]}" target="_blank" class="ref-link">{f["ref"]}</a></div>
-  </div>
-</div>'''
+# ═══════════════════════════════════════════════════
+#  INTERACTIVE HTML POC GENERATOR
+# ═══════════════════════════════════════════════════
 
-    # Headers evidence
-    hdr_rows = ''
-    security_headers = [
-        'X-Frame-Options','Content-Security-Policy','Strict-Transport-Security',
-        'X-Content-Type-Options','Referrer-Policy','Permissions-Policy',
-        'Access-Control-Allow-Origin','Set-Cookie','Server','X-Powered-By',
-        'X-XSS-Protection','X-Generator'
-    ]
-    for h in security_headers:
-        val = header_dump.get(h)
-        if val:
-            hdr_rows += f'<tr><td class="hk">{h}</td><td class="hv present">{val[:120]}</td></tr>'
-        else:
-            hdr_rows += f'<tr><td class="hk">{h}</td><td class="hv missing">NOT PRESENT</td></tr>'
+def generate_poc_report(raw_url, final_url, ip, status, latency, findings, headers):
+    safe_name = raw_url.replace('https://', '').replace('http://', '').replace('/', '_').replace(':', '_')
+    report_file = f"{safe_name}_cjf_report.html"
 
-    # PoC section (clickjacking)
-    cj = next((f for f in findings if f['id'] == 'CLICKJACKING'), None)
-    poc_tab  = '<div class="tab" onclick="sw(3)">&#127917; PoC Demo</div>' if cj else ''
-    poc_html = ''
-    if cj:
-        poc_html = f'''
-<div class="panel" id="p3">
-  <div class="poc-wrap">
-    <div class="poc-banner">
-      <span style="color:#ff4444;font-size:14px;font-weight:bold">LIVE CLICKJACKING PROOF OF CONCEPT</span>
-      <span class="poc-sub">Drag the slider to reveal the hidden target site beneath the attacker UI</span>
-    </div>
-    <div class="poc-desc">
-      <b style="color:#00ff99">Attack flow:</b><br>
-      <span class="step">1.</span> Target site <b>{final_url}</b> is loaded in a transparent iframe (z-index below attacker UI).<br>
-      <span class="step">2.</span> Attacker overlays a convincing fake UI on top — victim sees only the fake page.<br>
-      <span class="step">3.</span> Victim clicks "Claim Prize" thinking it is on the attacker site — click hits the real hidden site button.<br>
-      <span class="step">4.</span> Real action executes (form submit, account action, etc.) without victim's knowledge.<br><br>
-      <b>Why this works:</b> The server sends no X-Frame-Options or CSP frame-ancestors header, so browsers allow any site to embed it in an iframe.
-    </div>
-    <div class="arena">
-      <iframe id="rf" src="{final_url}" class="victim-frame"></iframe>
-      <div class="atk-ui" id="aui">
-        <div class="atk-card">
-          <div style="font-size:28px">&#127881;</div>
-          <h2 style="color:#fff;margin:8px 0">You Won!</h2>
-          <p style="color:#aaa;font-size:13px;margin-bottom:20px">Special reward — limited time only!</p>
-          <button class="atk-btn" onclick="triggerAtk()">Claim Prize Now &#128293;</button>
-          <p style="font-size:10px;color:#1a3a2a;margin-top:12px">[ Attacker fake button ]</p>
+    score = calc_score(findings)
+    risk_label, _ = get_overall_risk(score)
+    theme_color = {'CRITICAL': '#e53e3e', 'HIGH': '#dd6b20', 'MEDIUM': '#d69e2e', 'LOW': '#3182ce', 'SECURE': '#38a169'}.get(risk_label, '#718096')
+
+    # Build Finding Accordions
+    findings_html = ""
+    for i, f in enumerate(findings, 1):
+        badge_color = {'CRITICAL': '#e53e3e', 'HIGH': '#dd6b20', 'MEDIUM': '#d69e2e', 'LOW': '#3182ce'}.get(f['risk'], '#718096')
+        fix_code = f['fix'].replace('\n', '<br>')
+        findings_html += f"""
+        <div class="card mb-4">
+            <div class="card-header" style="border-left: 5px solid {badge_color};" onclick="toggleCard({i})">
+                <span class="badge" style="background: {badge_color};">{f['risk']}</span>
+                <strong class="title">#{i} {f['name']}</strong>
+                <span class="location-tag">{f['location'][:45]}...</span>
+            </div>
+            <div class="card-body" id="card-{i}">
+                <div class="row"><div class="label">Component Location</div><div class="value code">{f['location']}</div></div>
+                <div class="row"><div class="label">Observed Evidence</div><div class="value code-evidence">{f['evidence']}</div></div>
+                <div class="row"><div class="label">Root Cause</div><div class="value">{f['root']}</div></div>
+                <div class="row"><div class="label">Real-World Impact</div><div class="value alert-impact">{f['impact']}</div></div>
+                <div class="row"><div class="label">CVSS 3.1 Rating</div><div class="value cvss-pill">{f['cvss']}</div></div>
+                <div class="row"><div class="label">Remediation Guidelines</div><div class="value code-fix">{fix_code}</div></div>
+                <div class="row"><div class="label">Technical Reference</div><div class="value"><a href="{f['ref']}" target="_blank">{f['ref']}</a></div></div>
+            </div>
         </div>
-      </div>
-    </div>
-    <div class="slider-row">
-      <span>Reveal hidden site:</span>
-      <input type="range" min="0" max="100" value="8" id="sl"
-        oninput="document.getElementById('rf').style.opacity=this.value/100;
-                 document.getElementById('aui').style.opacity=Math.max(0,1-this.value/60)">
-      <span id="slv">8%</span>
-    </div>
-    <div id="atk-result" class="atk-result">
-      <b>&#128683; Attack Executed!</b><br>
-      Victim just performed an action on <b>{final_url}</b> without knowing.
-      Their click hit a real button hidden underneath this page.
-      If this was a "Delete Account" or "Transfer Funds" button — the action would have completed.
-    </div>
-    <div class="poc-note">
-      Note: Some browsers may show a blank iframe even when the site IS vulnerable to clickjacking.
-      This is because the browser loads the page in a sandboxed context. The vulnerability still exists —
-      a real attacker would host this on a proper server (not file://) and it would work fully.
-      The vulnerability proof is in the missing HTTP headers above.
-    </div>
-  </div>
-</div>'''
+        """
 
-    # Bug report text
-    rpt = f"""# Security Scan Report — CJF v4.0
+    # Build Header Matrix
+    header_rows = ""
+    audited = ['X-Frame-Options', 'Content-Security-Policy', 'Strict-Transport-Security', 'X-Content-Type-Options', 'Referrer-Policy', 'Permissions-Policy', 'Access-Control-Allow-Origin', 'Set-Cookie', 'Server', 'X-Powered-By']
+    for h in audited:
+        val = headers.get(h)
+        if val:
+            header_rows += f"<tr><td><strong>{h}</strong></td><td class='present'>{val}</td><td class='badge-pass'>PASS</td></tr>"
+        else:
+            header_rows += f"<tr><td><strong>{h}</strong></td><td class='missing'>NOT PRESENT</td><td class='badge-fail'>MISSING</td></tr>"
 
-Target  : {final_url}
-Scanned : {scan_time}
-Issues  : {len(findings)}
-Score   : {score}
-Level   : {lbl}
+    # Clickjacking PoC Tab
+    cj_vuln = any(f['id'] == 'CLICKJACKING' for f in findings)
+    cj_tab_btn = '<button class="tab-btn" onclick="openTab(\'tab-poc\')">Live Clickjacking PoC</button>' if cj_vuln else ''
+    
+    cj_tab_content = f"""
+    <div id="tab-poc" class="tab-content">
+        <div class="poc-container">
+            <div class="poc-header">
+                <h3>Live Clickjacking (UI Redressing) Simulator</h3>
+                <p>This proof-of-concept tests whether <strong>{final_url}</strong> permits cross-origin framing and simulates an active UI redressing attack vector.</p>
+                <div class="server-notice">
+                    <strong>💡 Browser Sandbox Notice:</strong> If modern browsers refuse to load this page when opened as a local file (<code>file:///</code>), 
+                    run <code>python Clickjacking_Finder.py --serve</code> in this directory to load with a standard HTTP origin.
+                </div>
+            </div>
 
-{'='*60}
-"""
+            <div class="poc-controls">
+                <button class="btn" onclick="reloadIframe()">Reload Frame</button>
+                <button class="btn" onclick="window.open('{final_url}', '_blank')">Open Target In New Tab</button>
+                <div class="slider-box">
+                    <span>Overlay Opacity:</span>
+                    <input type="range" id="opacitySlider" min="0" max="100" value="25" oninput="adjustOpacity(this.value)">
+                    <span id="opacityVal">25%</span>
+                </div>
+            </div>
+
+            <div class="simulator-stage">
+                <!-- Target Layer (Underneath) -->
+                <iframe id="targetFrame" src="{final_url}" class="target-iframe"></iframe>
+
+                <!-- Attacker Decoy Layer (Overlay) -->
+                <div id="decoyOverlay" class="decoy-overlay">
+                    <div class="decoy-card">
+                        <h2>🎁 Verification Required</h2>
+                        <p>Click below to verify identity and claim administrative gift token.</p>
+                        <button class="decoy-button" onclick="recordClick()">Verify & Claim Prize</button>
+                        <div class="decoy-note">(Decoy Button Positioned Over Target Coordinates)</div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="clickAlert" class="click-alert">
+                <strong>⚡ Click Registered!</strong> In a real-world scenario, your click would penetrate the transparent layer and trigger the underlying action on <strong>{final_url}</strong> without your consent.
+            </div>
+        </div>
+    </div>
+    """ if cj_vuln else '<div id="tab-poc" class="tab-content"><p>Target is not vulnerable to clickjacking.</p></div>'
+
+    # Build Markdown Bug Report
+    md_report = f"# Vulnerability Assessment Report - {final_url}\n\n"
+    md_report += f"- Target Host: {final_url}\n"
+    md_report += f"- IP Address : {ip}\n"
+    md_report += f"- Scan Time  : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    md_report += f"- Overall Posture: {risk_label} (Score: {score})\n\n---\n\n"
     for f in findings:
-        rpt += f"""
-## [{f['risk']}] {f['name']}
-
-Evidence   : {f['evidence']}
-Root Cause : {f['root']}
-Impact     : {f['impact']}
-CVSS       : {f['cvss']}
-Fix        : {f['fix']}
-Reference  : {f['ref']}
-
-{'-'*60}"""
-    rpt += f"\n\n*Generated by CJF v1.0 | Developed by AVII-VERSE | {scan_time}*"
+        md_report += f"## [{f['risk']}] {f['name']}\n"
+        md_report += f"- Location: {f['location']}\n"
+        md_report += f"- Evidence: {f['evidence']}\n"
+        md_report += f"- CVSS 3.1: {f['cvss']}\n"
+        md_report += f"- Root Cause: {f['root']}\n"
+        md_report += f"- Real-World Impact: {f['impact']}\n"
+        md_report += f"- Remediation:\n```\n{f['fix']}\n```\n\n"
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>CJF Report | {raw_url}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CJF Assessment Report | {raw_url}</title>
 <style>
-*{{margin:0;padding:0;box-sizing:border-box;}}
-body{{font-family:'Courier New',monospace;background:#060810;color:#d0d0d0;font-size:13px;}}
+    :root {{
+        --bg-primary: #f8fafc;
+        --bg-surface: #ffffff;
+        --border-color: #e2e8f0;
+        --text-primary: #1a202c;
+        --text-muted: #718096;
+        --accent: #3182ce;
+        --danger: #e53e3e;
+        --warning: #dd6b20;
+        --success: #38a169;
+    }}
+    * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }}
+    body {{ background: var(--bg-primary); color: var(--text-primary); line-height: 1.6; padding: 24px; }}
+    .container {{ max-width: 1100px; margin: 0 auto; }}
 
-/* TOP BAR */
-.tb{{background:#0a0c14;border-bottom:2px solid {oc};padding:14px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;}}
-.tb h1{{font-size:14px;color:{oc};letter-spacing:2px;}}
-.rlbl{{background:{oc};color:#000;padding:3px 12px;border-radius:3px;font-size:11px;font-weight:bold;}}
-.turl{{color:#444;font-size:12px;margin-left:auto;word-break:break-all;max-width:40%;}}
-.sc{{background:#111;border:1px solid #222;border-radius:4px;padding:5px 14px;
-  font-size:12px;color:{oc};white-space:nowrap;}}
+    /* Header */
+    .header-bar {{ background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 24px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }}
+    .header-title {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }}
+    .header-title h1 {{ font-size: 20px; font-weight: 700; color: #2d3748; }}
+    .meta-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 16px; }}
+    .meta-item {{ background: #f7fafc; padding: 12px; border-radius: 6px; border: 1px solid #edf2f7; }}
+    .meta-item .label {{ font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600; }}
+    .meta-item .val {{ font-size: 15px; font-weight: 700; margin-top: 4px; }}
 
-/* TABS */
-.tabs{{display:flex;background:#0a0c14;border-bottom:1px solid #1a1a2a;overflow-x:auto;}}
-.tab{{padding:11px 18px;cursor:pointer;font-size:12px;color:#444;
-  border-bottom:2px solid transparent;white-space:nowrap;transition:.2s;}}
-.tab.active{{color:#00ff99;border-bottom-color:#00ff99;}}
-.tab:hover{{color:#ccc;}}
-.panel{{display:none;}}.panel.active{{display:block;}}
+    /* Tabs */
+    .tab-nav {{ display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 2px solid var(--border-color); }}
+    .tab-btn {{ background: none; border: none; padding: 12px 20px; font-size: 14px; font-weight: 600; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; }}
+    .tab-btn.active {{ color: var(--accent); border-bottom-color: var(--accent); }}
+    .tab-content {{ display: none; }}
+    .tab-content.active {{ display: block; }}
 
-/* OVERVIEW */
-.og{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:16px 20px;}}
-.sc2{{background:#0a0c14;border:1px solid #1a1a2a;border-radius:6px;padding:14px;text-align:center;}}
-.sc2 .n{{font-size:28px;font-weight:bold;}}
-.sc2 .l{{font-size:10px;color:#444;text-transform:uppercase;letter-spacing:1px;margin-top:4px;}}
-.vt{{margin:0 20px 20px;border-collapse:collapse;width:calc(100% - 40px);}}
-.vt th{{background:#0a0c14;color:#333;padding:8px 12px;text-align:left;
-  border-bottom:1px solid #1a1a2a;font-size:10px;text-transform:uppercase;letter-spacing:1px;}}
-.vt td{{padding:9px 12px;border-bottom:1px solid #0f1020;vertical-align:middle;}}
-.vt tr:hover td{{background:#0a0c18;}}
-.b{{padding:2px 8px;border-radius:3px;font-size:10px;font-weight:bold;}}
-.ev{{color:#444;font-size:11px;}}
+    /* Findings Cards */
+    .card {{ background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 16px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }}
+    .card-header {{ padding: 16px 20px; cursor: pointer; display: flex; align-items: center; gap: 12px; background: #ffffff; user-select: none; }}
+    .card-header:hover {{ background: #f7fafc; }}
+    .badge {{ color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; }}
+    .location-tag {{ margin-left: auto; font-size: 12px; color: var(--text-muted); font-family: monospace; }}
+    .card-body {{ padding: 20px; border-top: 1px solid var(--border-color); background: #fafafa; }}
+    .row {{ margin-bottom: 12px; }}
+    .row .label {{ font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 4px; }}
+    .row .value {{ font-size: 14px; }}
+    .code {{ font-family: Consolas, monospace; background: #edf2f7; padding: 4px 8px; border-radius: 4px; font-size: 13px; display: inline-block; }}
+    .code-evidence {{ font-family: Consolas, monospace; background: #fff5f5; color: #c53030; padding: 8px; border-radius: 4px; border: 1px solid #feb2b2; font-size: 13px; word-break: break-all; }}
+    .code-fix {{ font-family: Consolas, monospace; background: #f0fff4; color: #22543d; padding: 10px; border-radius: 4px; border: 1px solid #9ae6b4; font-size: 13px; white-space: pre-wrap; }}
+    .alert-impact {{ background: #fffaf0; border-left: 4px solid var(--warning); padding: 8px 12px; color: #744210; }}
+    .cvss-pill {{ font-family: Consolas, monospace; font-size: 12px; color: #4a5568; }}
 
-/* DETAILS */
-.dw{{padding:16px 20px;display:flex;flex-direction:column;gap:10px;}}
-.dp{{background:#0a0c14;border:1px solid #1a1a2a;border-radius:6px;overflow:hidden;
-  cursor:pointer;transition:.15s;}}
-.dp:hover{{border-color:#2a2a4a;}}
-.dh{{padding:11px 14px;display:flex;align-items:center;gap:10px;background:#0c0e18;}}
-.cvss-pill{{margin-left:auto;font-size:10px;color:#555;}}
-.db{{padding:14px;display:none;}}
-.dp.open .db{{display:block;}}
-.dr{{display:flex;gap:12px;margin-bottom:8px;flex-wrap:wrap;}}
-.dk{{color:#333;min-width:90px;flex-shrink:0;font-size:11px;padding-top:2px;}}
-.dv{{color:#aaa;flex:1;line-height:1.7;}}
-.red{{color:#ff8888;}}
-.dim{{color:#555;}}
-.ev-code{{background:#060810;border:1px solid #1a1a2a;padding:4px 8px;border-radius:3px;
-  color:#00ff99;font-size:11px;word-break:break-all;flex:1;}}
-.fix-code{{background:#050e08;border:1px solid #0a2010;padding:6px 10px;border-radius:3px;
-  color:#00cc66;font-size:12px;word-break:break-all;flex:1;line-height:1.8;}}
-.ref-link{{color:#4499ff;font-size:12px;}}
+    /* Table */
+    .table-container {{ background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }}
+    table {{ width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }}
+    th {{ background: #f7fafc; padding: 12px 16px; border-bottom: 1px solid var(--border-color); font-weight: 700; color: #4a5568; }}
+    td {{ padding: 12px 16px; border-bottom: 1px solid #edf2f7; }}
+    td.present {{ color: var(--success); font-family: monospace; word-break: break-all; }}
+    td.missing {{ color: var(--danger); font-style: italic; }}
+    .badge-pass {{ color: var(--success); font-weight: 700; }}
+    .badge-fail {{ color: var(--danger); font-weight: 700; }}
 
-/* HEADERS */
-.hw{{padding:16px 20px;}}
-.ht{{border-collapse:collapse;width:100%;}}
-.ht td{{padding:8px 14px;border-bottom:1px solid #0f1020;font-size:12px;}}
-.hk{{color:#555;width:260px;}}
-.hv.present{{color:#00ff99;word-break:break-all;}}
-.hv.missing{{color:#ff4444;font-style:italic;}}
+    /* PoC Simulator */
+    .poc-container {{ background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 24px; }}
+    .server-notice {{ background: #ebf8ff; border: 1px solid #bee3f8; color: #2b6cb0; padding: 12px; border-radius: 6px; font-size: 13px; margin: 12px 0 20px 0; }}
+    .poc-controls {{ display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }}
+    .btn {{ background: var(--accent); color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }}
+    .btn:hover {{ opacity: 0.9; }}
+    .slider-box {{ display: flex; align-items: center; gap: 8px; margin-left: auto; font-size: 13px; }}
+    .simulator-stage {{ position: relative; width: 100%; height: 500px; border: 2px solid #cbd5e0; border-radius: 8px; overflow: hidden; background: #ffffff; }}
+    .target-iframe {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; z-index: 1; }}
+    .decoy-overlay {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(240, 244, 248, 0.25); z-index: 2; display: flex; align-items: center; justify-content: center; }}
+    .decoy-card {{ background: rgba(255, 255, 255, 0.95); border: 2px solid #cbd5e0; border-radius: 12px; padding: 24px 36px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
+    .decoy-button {{ background: #319795; color: white; border: none; padding: 12px 28px; font-size: 15px; font-weight: 700; border-radius: 6px; cursor: pointer; margin-top: 16px; }}
+    .decoy-note {{ font-size: 11px; color: var(--text-muted); margin-top: 8px; }}
+    .click-alert {{ display: none; margin-top: 16px; padding: 12px 16px; background: #feebc8; border-left: 4px solid var(--warning); color: #7b341e; border-radius: 4px; font-size: 13px; }}
 
-/* POC */
-.poc-wrap{{padding:16px 20px;}}
-.poc-banner{{background:#0a0c14;border:1px solid #ff4444;border-radius:6px;
-  padding:12px 18px;margin-bottom:12px;display:flex;flex-direction:column;gap:4px;}}
-.poc-sub{{color:#555;font-size:11px;}}
-.poc-desc{{background:#0a0c14;border:1px solid #1a1a2a;border-radius:6px;
-  padding:14px;margin-bottom:12px;line-height:1.9;color:#888;font-size:12px;}}
-.step{{color:#ffcc00;}}
-.arena{{position:relative;width:100%;height:520px;border:2px solid #1a1a2a;
-  border-radius:6px;overflow:hidden;background:#0a0c14;}}
-.victim-frame{{position:absolute;top:0;left:0;width:100%;height:100%;
-  opacity:.08;border:none;z-index:1;}}
-.atk-ui{{position:absolute;top:0;left:0;width:100%;height:100%;
-  background:linear-gradient(135deg,#0a1628,#0d2040,#102856);
-  z-index:2;display:flex;align-items:center;justify-content:center;}}
-.atk-card{{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);
-  border-radius:12px;padding:32px 48px;text-align:center;backdrop-filter:blur(4px);}}
-.atk-btn{{background:linear-gradient(135deg,#00cc55,#00aa44);color:#fff;border:none;
-  padding:14px 40px;font-size:15px;border-radius:8px;cursor:pointer;font-weight:bold;
-  box-shadow:0 0 24px rgba(0,204,85,.4);transition:transform .15s,box-shadow .15s;
-  font-family:'Courier New',monospace;}}
-.atk-btn:hover{{transform:translateY(-2px);box-shadow:0 0 32px rgba(0,204,85,.6);}}
-.slider-row{{display:flex;align-items:center;gap:12px;padding:10px 0;
-  font-size:12px;color:#555;}}
-.slider-row input{{width:200px;cursor:pointer;accent-color:#00ff99;}}
-.atk-result{{display:none;margin-top:10px;padding:14px 18px;
-  background:#150000;border:1px solid #ff4444;border-radius:6px;
-  color:#ff8888;font-size:13px;line-height:1.8;}}
-.poc-note{{margin-top:10px;padding:10px 14px;background:#0d0d0d;border:1px solid #1a1a1a;
-  border-radius:4px;color:#333;font-size:11px;line-height:1.7;}}
-
-/* REPORT */
-.rw{{padding:16px 20px;}}
-.cb{{margin-bottom:10px;padding:7px 18px;background:#0a0c14;border:1px solid #1a1a2a;
-  color:#00ff99;border-radius:4px;cursor:pointer;font-size:12px;}}
-.cb:hover{{background:#111;}}
-.rt{{background:#0a0c14;border:1px solid #1a1a2a;border-radius:6px;padding:16px;
-  white-space:pre-wrap;font-size:11px;line-height:1.9;color:#888;
-  max-height:600px;overflow-y:auto;}}
-
-.footer{{text-align:center;padding:12px;font-size:10px;color:#1a1a2a;
-  border-top:1px solid #0f1020;margin-top:8px;}}
+    /* Markdown Export */
+    .report-box {{ width: 100%; height: 400px; background: #1a202c; color: #e2e8f0; font-family: Consolas, monospace; font-size: 12px; padding: 16px; border-radius: 6px; border: none; resize: vertical; }}
 </style>
 </head>
 <body>
+<div class="container">
+    <div class="header-bar">
+        <div class="header-title">
+            <h1>Web Security & Clickjacking Assessment</h1>
+            <span class="badge" style="background: {theme_color}; font-size: 13px; padding: 6px 14px;">{risk_label} POSTURE</span>
+        </div>
+        <p style="color: var(--text-muted); font-size: 14px;">Target Audit: <strong>{final_url}</strong></p>
+        <div class="meta-grid">
+            <div class="meta-item"><div class="label">Host IP</div><div class="val">{ip}</div></div>
+            <div class="meta-item"><div class="label">Risk Score</div><div class="val" style="color: {theme_color};">{score}</div></div>
+            <div class="meta-item"><div class="label">Total Findings</div><div class="val">{len(findings)} Issue(s)</div></div>
+            <div class="meta-item"><div class="label">Latency</div><div class="val">{latency} ms</div></div>
+        </div>
+    </div>
 
-<div class="tb">
-  <h1>&#9888; CJF SECURITY REPORT</h1>
-  <span class="rlbl">{lbl}</span>
-  <span class="sc">Score: {score} | Issues: {len(findings)}</span>
-  <span class="turl">{final_url}</span>
+    <div class="tab-nav">
+        <button class="tab-btn active" onclick="openTab('tab-findings')">Vulnerability Findings ({len(findings)})</button>
+        <button class="tab-btn" onclick="openTab('tab-headers')">HTTP Headers Audit</button>
+        {cj_tab_btn}
+        <button class="tab-btn" onclick="openTab('tab-report')">Export Bug Bounty Report</button>
+    </div>
+
+    <!-- Findings Tab -->
+    <div id="tab-findings" class="tab-content active">
+        {findings_html if findings else '<div class="card"><div class="card-body">No vulnerabilities detected. All verified checks passed.</div></div>'}
+    </div>
+
+    <!-- Headers Tab -->
+    <div id="tab-headers" class="tab-content">
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr><th>Header Name</th><th>Observed Value</th><th>Compliance</th></tr>
+                </thead>
+                <tbody>
+                    {header_rows}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- PoC Tab -->
+    {cj_tab_content}
+
+    <!-- Report Tab -->
+    <div id="tab-report" class="tab-content">
+        <div style="margin-bottom: 12px;">
+            <button class="btn" onclick="copyReport()">Copy Report to Clipboard</button>
+        </div>
+        <textarea id="rawReport" class="report-box" readonly>{md_report}</textarea>
+    </div>
 </div>
-
-<div class="tabs">
-  <div class="tab active" onclick="sw(0)">&#128202; Overview</div>
-  <div class="tab" onclick="sw(1)">&#128269; Findings</div>
-  <div class="tab" onclick="sw(2)">&#128200; HTTP Headers</div>
-  {poc_tab}
-  <div class="tab" onclick="sw(4)">&#128196; Bug Report</div>
-</div>
-
-<!-- OVERVIEW -->
-<div class="panel active" id="p0">
-  <div class="og">
-    <div class="sc2"><div class="n" style="color:{oc}">{len(findings)}</div><div class="l">Total Issues</div></div>
-    <div class="sc2"><div class="n" style="color:#ff4444">{sum(1 for f in findings if f['risk'] in ('HIGH','CRITICAL'))}</div><div class="l">High / Critical</div></div>
-    <div class="sc2"><div class="n" style="color:#ffcc00">{sum(1 for f in findings if f['risk']=='MEDIUM')}</div><div class="l">Medium</div></div>
-    <div class="sc2"><div class="n" style="color:#00ccff">{sum(1 for f in findings if f['risk']=='LOW')}</div><div class="l">Low</div></div>
-  </div>
-  <table class="vt">
-    <thead><tr><th>Risk</th><th>Vulnerability</th><th>Evidence</th><th>CVSS</th></tr></thead>
-    <tbody>{trows}</tbody>
-  </table>
-</div>
-
-<!-- FINDINGS DETAIL -->
-<div class="panel" id="p1">
-  <div class="dw">{dpanels}</div>
-</div>
-
-<!-- HTTP HEADERS -->
-<div class="panel" id="p2">
-  <div class="hw">
-    <p style="color:#444;font-size:11px;margin-bottom:12px">Security-relevant HTTP response headers from {final_url}</p>
-    <table class="ht"><tbody>{hdr_rows}</tbody></table>
-  </div>
-</div>
-
-{poc_html}
-
-<!-- BUG REPORT -->
-<div class="panel" id="p4">
-  <div class="rw">
-    <button class="cb" onclick="copyR()">&#128203; Copy Report</button>
-    <div class="rt" id="rp">{rpt}</div>
-  </div>
-</div>
-
-<div class="footer">CJF v1.0 | Developed by AVII-VERSE | {scan_time} | Authorized Security Testing Only</div>
 
 <script>
-var cur=0;
-function sw(n){{
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',i===n));
-  document.querySelectorAll('.panel').forEach((p,i)=>p.classList.toggle('active',i===n));
-  cur=n;
-}}
-function showDetail(i){{
-  document.querySelectorAll('.dp').forEach((d,j)=>{{
-    if(j===i)d.classList.toggle('open');
-    else d.classList.remove('open');
-  }});
-}}
-function triggerAtk(){{document.getElementById('atk-result').style.display='block';}}
-function copyR(){{
-  navigator.clipboard.writeText(document.getElementById('rp').innerText)
-    .then(()=>alert('Report copied!'));
-}}
-document.getElementById('sl') && document.getElementById('sl').addEventListener('input',function(){{
-  document.getElementById('slv').textContent=this.value+'%';
-}});
+    function openTab(id) {{
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        event.target.classList.add('active');
+        document.getElementById(id).classList.add('active');
+    }}
+    function toggleCard(id) {{
+        const b = document.getElementById('card-' + id);
+        b.style.display = b.style.display === 'none' ? 'block' : 'none';
+    }}
+    function adjustOpacity(val) {{
+        document.getElementById('opacityVal').innerText = val + '%';
+        document.getElementById('decoyOverlay').style.background = 'rgba(240, 244, 248, ' + (val/100) + ')';
+    }}
+    function recordClick() {{
+        document.getElementById('clickAlert').style.display = 'block';
+    }}
+    function reloadIframe() {{
+        const f = document.getElementById('targetFrame');
+        if (f) f.src = f.src;
+    }}
+    function copyReport() {{
+        const t = document.getElementById('rawReport');
+        t.select();
+        document.execCommand('copy');
+        alert('Bug Bounty Report copied to clipboard!');
+    }}
 </script>
 </body>
-</html>"""
-
-    with open(fname, 'w', encoding='utf-8') as f:
+</html>
+"""
+    with open(report_file, 'w', encoding='utf-8') as f:
         f.write(html)
-    return fname
-
+    return report_file
 
 # ═══════════════════════════════════════════════════
-#  FILE READER
+#  BUILT-IN PREVIEW WEB SERVER
 # ═══════════════════════════════════════════════════
-def read_sites(path):
+
+def serve_preview(port=8080):
+    print(f"\n{C}{BO}[*] Launching local HTTP preview server on port {port}...{RS}")
+    print(f"{G}[*] Serving at http://127.0.0.1:{port}/{RS}")
+    print(f"{DM}[*] Press Ctrl+C to terminate the local preview server.{RS}\n")
+    try:
+        webbrowser.open(f"http://127.0.0.1:{port}/")
+        server = HTTPServer(('127.0.0.1', port), SimpleHTTPRequestHandler)
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print(f"\n{Y}[*] Preview server stopped.{RS}")
+    except Exception as e:
+        print(f"{R}[!] Unable to launch preview server: {e}{RS}")
+
+# ═══════════════════════════════════════════════════
+#  FILE READER & CLI ENTRY
+# ═══════════════════════════════════════════════════
+
+def read_target_list(path):
     with open(path, 'rb') as f:
         raw = f.read()
     if raw.startswith(b'\xff\xfe') or raw.startswith(b'\xfe\xff'):
@@ -814,114 +950,83 @@ def read_sites(path):
         content = raw.decode('utf-8-sig')
     else:
         content = raw.decode('utf-8', errors='ignore')
-    lines = [l.strip().replace('\x00','') for l in content.splitlines()]
-    return [l for l in lines if l and not l.startswith('#')]
+    return [l.strip().replace('\x00', '') for l in content.splitlines() if l.strip() and not l.strip().startswith('#')]
 
-
-# ═══════════════════════════════════════════════════
-#  MAIN
-# ═══════════════════════════════════════════════════
 def main():
     print_banner()
 
-    if len(argv) < 2:
-        print(f"{Y}[*] Usage:{RS} python Clickjacking_Finder.py <targets_file> [threads]\n")
-        print(f"  Example: python Clickjacking_Finder.py sites.txt")
-        print(f"  Example: python Clickjacking_Finder.py sites.txt 10\n")
+    if len(argv) >= 2 and argv[1] == '--serve':
+        port = int(argv[2]) if len(argv) > 2 else 8080
+        serve_preview(port)
         exit(0)
 
-    try:
-        sites = read_sites(argv[1])
-    except Exception as e:
-        print(f"{R}[!] Cannot read file: {e}{RS}"); exit(0)
+    if len(argv) < 2:
+        print(f"{Y}[*] Usage:{RS}")
+        print(f"  Standard Audit : python Clickjacking_Finder.py <targets_file> [threads]")
+        print(f"  Launch Preview : python Clickjacking_Finder.py --serve [port]\n")
+        print(f"  Example: python Clickjacking_Finder.py targets.txt 10")
+        print(f"  Example: python Clickjacking_Finder.py --serve 8080\n")
+        exit(0)
 
+    target_file = argv[1]
     threads = int(argv[2]) if len(argv) > 2 else THREADS
-    total   = len(sites)
-    ts      = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    print(f"{C}[*]{RS} Targets: {BO}{total}{RS} | Threads: {BO}{threads}{RS} | Timeout: {BO}{TIMEOUT}s{RS}")
-    print(f"{C}[*]{RS} Checks : Clickjacking, CORS, Cookies, HSTS, CSP, Info-Disclosure, XCTO, Referrer, Permissions\n")
+    try:
+        targets = read_target_list(target_file)
+    except Exception as e:
+        print(f"{R}[!] Unable to read targets file: {e}{RS}\n")
+        exit(0)
+
+    total = len(targets)
+    print(f"{C}[*]{RS} Loaded Targets: {BO}{total}{RS} | Worker Threads: {BO}{threads}{RS} | Timeout: {BO}{TIMEOUT}s{RS}")
+    print(f"{C}[*]{RS} Assessment Scope: Clickjacking, CORS, Headers, Sensitive Files, SSL/TLS, Methods\n")
 
     results = {}
-    done    = [0]
-    lock    = __import__('threading').Lock()
+    completed = [0]
+    lock = __import__('threading').Lock()
 
-    def worker(site):
-        r = scan_site(site)
+    def worker(t):
+        res = scan_target(t)
         with lock:
-            done[0] += 1
-            pct = int(done[0] / total * 20)
-            bar = '#' * pct + '-' * (20 - pct)
-            print(f"\r  [{bar}] {done[0]}/{total} scanned", end='', flush=True)
-        return r
+            completed[0] += 1
+            pct = int((completed[0] / total) * 20)
+            bar = "#" * pct + "-" * (20 - pct)
+            print(f"\r  [{bar}] {completed[0]}/{total} Completed", end='', flush=True)
+        return res
 
-    with ThreadPoolExecutor(max_workers=threads) as ex:
-        futs = {ex.submit(worker, s): s for s in sites}
-        for fut in as_completed(futs):
-            raw, final, findings, err, hdrs = fut.result()
-            results[raw] = (final, findings, err, hdrs)
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        futures = {executor.submit(worker, t): t for t in targets}
+        for fut in as_completed(futures):
+            raw, final, ip, status, lat, findings, err, hdrs = fut.result()
+            results[raw] = (final, ip, status, lat, findings, err, hdrs)
 
-    print('\n')
+    print("\n")
 
-    vuln_sites  = []
-    secure_sites = []
-    error_sites  = []
+    # Render sorted results
+    sorted_res = sorted(results.items(), key=lambda x: -calc_score(x[1][4]))
+    summary_data = []
 
-    # Print results sorted by score (highest first)
-    sorted_sites = sorted(
-        results.items(),
-        key=lambda x: -score_findings(x[1][1])
-    )
+    for idx, (raw, (final, ip, status, lat, findings, err, hdrs)) in enumerate(sorted_res, 1):
+        print_target_result(idx, total, raw, final, ip, status, lat, findings, err)
+        if not err and findings:
+            report_name = generate_poc_report(raw, final, ip, status, lat, findings, hdrs)
+            print(f"  {Y}[>] Interactive PoC & Report Saved:{RS} {BO}{report_name}{RS}\n")
+            summary_data.append((raw, len(findings), calc_score(findings)))
+        elif not err:
+            summary_data.append((raw, 0, 0))
 
-    for idx, (raw, (final, findings, err, hdrs)) in enumerate(sorted_sites, 1):
-        print_site_header(idx, total, raw)
-
-        if err:
-            print(f"  {M}[ERROR]{RS} {err}\n")
-            error_sites.append(raw)
-            continue
-
-        score = score_findings(findings)
-        lbl, lc = overall_label_from_score(score)
-
-        if not findings:
-            print(f"  {G}{BO}[SECURE]{RS} No issues detected.\n")
-            secure_sites.append(raw)
-            continue
-
-        h = sum(1 for f in findings if f['risk'] in ('HIGH','CRITICAL'))
-        m = sum(1 for f in findings if f['risk'] == 'MEDIUM')
-        l = sum(1 for f in findings if f['risk'] == 'LOW')
-
-        print(f"  {lc}{BO}Overall: {lbl}{RS} | Score: {score} | "
-              f"{R}HIGH:{h}{RS} {Y}MED:{m}{RS} {C}LOW:{l}{RS} | "
-              f"Issues: {len(findings)}\n")
-
-        for i, f in enumerate(findings, 1):
-            print_finding(f, i)
-
-        report = build_report(raw, final, findings, hdrs or {}, ts)
-        print(f"  {Y}{BO}[>] Report : {report}{RS}")
-        print(f"  {Y}[>] Open in browser — Overview, Detail, PoC Demo, Bug Report tabs.{RS}\n")
-        vuln_sites.append((raw, len(findings), score, lbl))
-
-    # ── FINAL SUMMARY ─────────────────────
-    bar = '=' * 60
-    print(f"\n{C}{BO}{bar}{RS}")
-    print(f"{C}{BO}  FINAL SCAN SUMMARY{RS}")
-    print(f"{C}{BO}{bar}{RS}")
-    print(f"  {G}Secure  : {len(secure_sites)}{RS}")
-    print(f"  {R}Issues  : {len(vuln_sites)}{RS}")
-    print(f"  {M}Errors  : {len(error_sites)}{RS}")
-
-    if vuln_sites:
-        print(f"\n  {R}{BO}Vulnerability Ranking (worst first):{RS}")
-        for site, cnt, sc, lbl in sorted(vuln_sites, key=lambda x: -x[2]):
-            lc = overall_label_from_score(sc)[1]
-            print(f"    {lc}{BO}{lbl:10}{RS} score={sc:2}  issues={cnt}  {site}")
-
-    print(f"{C}{BO}{bar}{RS}\n")
-
+    # ── FINAL AUDIT SUMMARY TABLE ──
+    div = "=" * 62
+    print(f"{C}{BO}{div}{RS}")
+    print(f"{C}{BO}  FINAL AUDIT SUMMARY MATRIX{RS}")
+    print(f"{C}{BO}{div}{RS}")
+    print(f"  {'TARGET':<35} | {'ISSUES':<8} | {'RISK SCORE':<10}")
+    print(f"  {'-'*35}-+-{'-'*8}-+-{'-'*10}")
+    for target, count, score in summary_data:
+        rl, rc = get_overall_risk(score)
+        print(f"  {target:<35} | {count:<8} | {rc}{score} ({rl}){RS}")
+    print(f"{C}{BO}{div}{RS}\n")
+    print(f"{G}[*] Tip: Run `python Clickjacking_Finder.py --serve` to view interactive PoCs in your browser.{RS}\n")
 
 if __name__ == '__main__':
     main()
