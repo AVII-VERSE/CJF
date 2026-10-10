@@ -684,53 +684,77 @@ def generate_poc_report(raw_url, final_url, ip, status, latency, findings, heade
         else:
             header_rows += f"<tr><td><strong>{h}</strong></td><td class='missing'>NOT PRESENT</td><td class='badge-fail'>MISSING</td></tr>"
 
-    # Clickjacking PoC Tab
+    # ── Clickjacking PoC Section (Always Available & Active as Tab 1) ──
     cj_vuln = any(f['id'] == 'CLICKJACKING' for f in findings)
-    cj_tab_btn = '<button class="tab-btn" onclick="openTab(\'tab-poc\')">Live Clickjacking PoC</button>' if cj_vuln else ''
+    cj_status_badge = '<span class="status-pill vuln">CRITICAL: VULNERABLE TO CLICKJACKING (Framing Permitted)</span>' if cj_vuln else '<span class="status-pill safe">PROTECTED: Framing Restricted by Headers</span>'
     
     cj_tab_content = f"""
-    <div id="tab-poc" class="tab-content">
+    <div id="tab-poc" class="tab-content active">
         <div class="poc-container">
             <div class="poc-header">
-                <h3>Live Clickjacking (UI Redressing) Simulator</h3>
-                <p>This proof-of-concept tests whether <strong>{final_url}</strong> permits cross-origin framing and simulates an active UI redressing attack vector.</p>
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                    <h3>Interactive Clickjacking (UI Redressing) PoC Demo</h3>
+                    {cj_status_badge}
+                </div>
+                <p>This live proof-of-concept demonstrates how an attacker exploits missing framing protections by layering an invisible target frame beneath a deceptive decoy button.</p>
                 <div class="server-notice">
-                    <strong>💡 Browser Sandbox Notice:</strong> If modern browsers refuse to load this page when opened as a local file (<code>file:///</code>), 
-                    run <code>python Clickjacking_Finder.py --serve</code> in this directory to load with a standard HTTP origin.
+                    <strong>💡 Local Browser Tip:</strong> If your browser blocks local cross-origin iframes on <code>file:///</code> paths, run <code>python Clickjacking_Finder.py --serve</code> to launch the built-in HTTP server on <code>http://127.0.0.1:8080/</code>.
                 </div>
             </div>
 
+            <!-- Simulator Controls -->
             <div class="poc-controls">
-                <button class="btn" onclick="reloadIframe()">Reload Frame</button>
-                <button class="btn" onclick="window.open('{final_url}', '_blank')">Open Target In New Tab</button>
+                <div class="mode-buttons">
+                    <button class="btn btn-mode active" onclick="setMode('overlay', this)">🎯 Layered Overlay Mode</button>
+                    <button class="btn btn-mode" onclick="setMode('split', this)">↔️ Side-by-Side Mode</button>
+                    <button class="btn btn-mode" onclick="setMode('frame', this)">🖥️ Full Frame Mode</button>
+                </div>
+                <div class="action-buttons">
+                    <button class="btn btn-sec" onclick="reloadIframe()">🔄 Reload Frame</button>
+                    <button class="btn btn-sec" onclick="window.open('{final_url}', '_blank')">🔗 Open Target</button>
+                </div>
                 <div class="slider-box">
-                    <span>Overlay Opacity:</span>
-                    <input type="range" id="opacitySlider" min="0" max="100" value="25" oninput="adjustOpacity(this.value)">
-                    <span id="opacityVal">25%</span>
+                    <span>Decoy Opacity:</span>
+                    <input type="range" id="opacitySlider" min="0" max="100" value="40" oninput="adjustOpacity(this.value)">
+                    <span id="opacityVal" style="font-weight: 700; min-width: 42px;">40%</span>
                 </div>
             </div>
 
-            <div class="simulator-stage">
-                <!-- Target Layer (Underneath) -->
-                <iframe id="targetFrame" src="{final_url}" class="target-iframe"></iframe>
+            <!-- Visual Simulation Arena -->
+            <div id="simulatorStage" class="simulator-stage mode-overlay">
+                <!-- Target Website Iframe (Layer 1 - Underneath) -->
+                <div id="frameWrapper" class="frame-wrapper">
+                    <div class="layer-tag">TARGET LAYER ({final_url})</div>
+                    <iframe id="targetFrame" src="{final_url}" class="target-iframe"></iframe>
+                </div>
 
-                <!-- Attacker Decoy Layer (Overlay) -->
+                <!-- Attacker Decoy Overlay (Layer 2 - On Top) -->
                 <div id="decoyOverlay" class="decoy-overlay">
+                    <div class="layer-tag" style="background: #2b6cb0;">ATTACKER DECOY LAYER</div>
                     <div class="decoy-card">
-                        <h2>🎁 Verification Required</h2>
-                        <p>Click below to verify identity and claim administrative gift token.</p>
-                        <button class="decoy-button" onclick="recordClick()">Verify & Claim Prize</button>
-                        <div class="decoy-note">(Decoy Button Positioned Over Target Coordinates)</div>
+                        <div class="decoy-icon">🎁</div>
+                        <h2>Verification & Special Prize</h2>
+                        <p>Complete single-click verification to claim your reward coupon.</p>
+                        <button id="exploitBtn" class="decoy-button" onclick="recordClick(event)">
+                            👉 CLICK HERE TO VERIFY & CLAIM 👈
+                        </button>
+                        <div class="decoy-hint">(Clicking this button penetrates the transparent overlay to hit underlying target controls)</div>
                     </div>
                 </div>
             </div>
 
+            <!-- Click Telemetry Monitor -->
             <div id="clickAlert" class="click-alert">
-                <strong>⚡ Click Registered!</strong> In a real-world scenario, your click would penetrate the transparent layer and trigger the underlying action on <strong>{final_url}</strong> without your consent.
+                <div class="telemetry-header">
+                    <h4>⚡ CLICK INTERCEPTION REGISTERED!</h4>
+                    <span id="clickCounter" class="click-counter">Total Clicks: 0</span>
+                </div>
+                <p><strong>Coordinates Intercepted:</strong> X: <span id="clickX" class="coord">0</span>px, Y: <span id="clickY" class="coord">0</span>px (Relative to Stage: <span id="clickRel" class="coord">0, 0</span>)</p>
+                <p><strong>Exploit Mechanism:</strong> The user believes they are clicking the decoy "Claim" button. However, the browser dispatches the click through the transparent overlay directly onto <strong>{final_url}</strong> at the exact corresponding coordinate!</p>
             </div>
         </div>
     </div>
-    """ if cj_vuln else '<div id="tab-poc" class="tab-content"><p>Target is not vulnerable to clickjacking.</p></div>'
+    """
 
     # Build Markdown Bug Report
     md_report = f"# Vulnerability Assessment Report - {final_url}\n\n"
@@ -757,47 +781,48 @@ def generate_poc_report(raw_url, final_url, ip, status, latency, findings, heade
     :root {{
         --bg-primary: #f8fafc;
         --bg-surface: #ffffff;
-        --border-color: #e2e8f0;
+        --border-color: #cbd5e0;
         --text-primary: #1a202c;
         --text-muted: #718096;
-        --accent: #3182ce;
+        --accent: #2b6cb0;
         --danger: #e53e3e;
         --warning: #dd6b20;
         --success: #38a169;
     }}
     * {{ margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }}
-    body {{ background: var(--bg-primary); color: var(--text-primary); line-height: 1.6; padding: 24px; }}
-    .container {{ max-width: 1100px; margin: 0 auto; }}
+    body {{ background: var(--bg-primary); color: var(--text-primary); line-height: 1.6; padding: 20px; }}
+    .container {{ max-width: 1140px; margin: 0 auto; }}
 
     /* Header */
-    .header-bar {{ background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 24px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }}
-    .header-title {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }}
+    .header-bar {{ background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 20px 24px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }}
+    .header-title {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }}
     .header-title h1 {{ font-size: 20px; font-weight: 700; color: #2d3748; }}
-    .meta-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 16px; }}
-    .meta-item {{ background: #f7fafc; padding: 12px; border-radius: 6px; border: 1px solid #edf2f7; }}
-    .meta-item .label {{ font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600; }}
-    .meta-item .val {{ font-size: 15px; font-weight: 700; margin-top: 4px; }}
+    .meta-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-top: 14px; }}
+    .meta-item {{ background: #f7fafc; padding: 10px 14px; border-radius: 6px; border: 1px solid #edf2f7; }}
+    .meta-item .label {{ font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 700; }}
+    .meta-item .val {{ font-size: 15px; font-weight: 700; margin-top: 2px; }}
 
     /* Tabs */
-    .tab-nav {{ display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 2px solid var(--border-color); }}
-    .tab-btn {{ background: none; border: none; padding: 12px 20px; font-size: 14px; font-weight: 600; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; }}
+    .tab-nav {{ display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 2px solid var(--border-color); overflow-x: auto; }}
+    .tab-btn {{ background: none; border: none; padding: 12px 20px; font-size: 14px; font-weight: 700; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; white-space: nowrap; transition: 0.2s; }}
+    .tab-btn:hover {{ color: var(--text-primary); }}
     .tab-btn.active {{ color: var(--accent); border-bottom-color: var(--accent); }}
     .tab-content {{ display: none; }}
     .tab-content.active {{ display: block; }}
 
     /* Findings Cards */
-    .card {{ background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 16px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }}
-    .card-header {{ padding: 16px 20px; cursor: pointer; display: flex; align-items: center; gap: 12px; background: #ffffff; user-select: none; }}
+    .card {{ background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 14px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }}
+    .card-header {{ padding: 14px 18px; cursor: pointer; display: flex; align-items: center; gap: 12px; background: #ffffff; user-select: none; transition: 0.15s; }}
     .card-header:hover {{ background: #f7fafc; }}
     .badge {{ color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; }}
     .location-tag {{ margin-left: auto; font-size: 12px; color: var(--text-muted); font-family: monospace; }}
-    .card-body {{ padding: 20px; border-top: 1px solid var(--border-color); background: #fafafa; }}
-    .row {{ margin-bottom: 12px; }}
-    .row .label {{ font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 4px; }}
-    .row .value {{ font-size: 14px; }}
-    .code {{ font-family: Consolas, monospace; background: #edf2f7; padding: 4px 8px; border-radius: 4px; font-size: 13px; display: inline-block; }}
-    .code-evidence {{ font-family: Consolas, monospace; background: #fff5f5; color: #c53030; padding: 8px; border-radius: 4px; border: 1px solid #feb2b2; font-size: 13px; word-break: break-all; }}
-    .code-fix {{ font-family: Consolas, monospace; background: #f0fff4; color: #22543d; padding: 10px; border-radius: 4px; border: 1px solid #9ae6b4; font-size: 13px; white-space: pre-wrap; }}
+    .card-body {{ padding: 18px; border-top: 1px solid var(--border-color); background: #fafafa; }}
+    .row {{ margin-bottom: 10px; }}
+    .row .label {{ font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 2px; }}
+    .row .value {{ font-size: 13px; }}
+    .code {{ font-family: Consolas, monospace; background: #edf2f7; padding: 4px 8px; border-radius: 4px; font-size: 12px; display: inline-block; }}
+    .code-evidence {{ font-family: Consolas, monospace; background: #fff5f5; color: #c53030; padding: 8px; border-radius: 4px; border: 1px solid #feb2b2; font-size: 12px; word-break: break-all; }}
+    .code-fix {{ font-family: Consolas, monospace; background: #f0fff4; color: #22543d; padding: 10px; border-radius: 4px; border: 1px solid #9ae6b4; font-size: 12px; white-space: pre-wrap; }}
     .alert-impact {{ background: #fffaf0; border-left: 4px solid var(--warning); padding: 8px 12px; color: #744210; }}
     .cvss-pill {{ font-family: Consolas, monospace; font-size: 12px; color: #4a5568; }}
 
@@ -812,22 +837,57 @@ def generate_poc_report(raw_url, final_url, ip, status, latency, findings, heade
     .badge-fail {{ color: var(--danger); font-weight: 700; }}
 
     /* PoC Simulator */
-    .poc-container {{ background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 24px; }}
-    .server-notice {{ background: #ebf8ff; border: 1px solid #bee3f8; color: #2b6cb0; padding: 12px; border-radius: 6px; font-size: 13px; margin: 12px 0 20px 0; }}
-    .poc-controls {{ display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }}
-    .btn {{ background: var(--accent); color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }}
+    .poc-container {{ background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 22px; }}
+    .status-pill {{ padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; }}
+    .status-pill.vuln {{ background: #fed7d7; color: #9b2c2c; border: 1px solid #feb2b2; }}
+    .status-pill.safe {{ background: #c6f6d5; color: #22543d; border: 1px solid #9ae6b4; }}
+    .server-notice {{ background: #ebf8ff; border: 1px solid #bee3f8; color: #2b6cb0; padding: 10px 14px; border-radius: 6px; font-size: 12px; margin: 12px 0 16px 0; }}
+    .poc-controls {{ display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; background: #f7fafc; padding: 10px 14px; border-radius: 6px; border: 1px solid #e2e8f0; }}
+    .mode-buttons, .action-buttons {{ display: flex; gap: 6px; }}
+    .btn {{ background: #2b6cb0; color: white; border: none; padding: 7px 14px; border-radius: 5px; font-size: 12px; font-weight: 700; cursor: pointer; transition: 0.15s; }}
     .btn:hover {{ opacity: 0.9; }}
-    .slider-box {{ display: flex; align-items: center; gap: 8px; margin-left: auto; font-size: 13px; }}
-    .simulator-stage {{ position: relative; width: 100%; height: 500px; border: 2px solid #cbd5e0; border-radius: 8px; overflow: hidden; background: #ffffff; }}
-    .target-iframe {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; z-index: 1; }}
-    .decoy-overlay {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(240, 244, 248, 0.25); z-index: 2; display: flex; align-items: center; justify-content: center; }}
-    .decoy-card {{ background: rgba(255, 255, 255, 0.95); border: 2px solid #cbd5e0; border-radius: 12px; padding: 24px 36px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
-    .decoy-button {{ background: #319795; color: white; border: none; padding: 12px 28px; font-size: 15px; font-weight: 700; border-radius: 6px; cursor: pointer; margin-top: 16px; }}
-    .decoy-note {{ font-size: 11px; color: var(--text-muted); margin-top: 8px; }}
-    .click-alert {{ display: none; margin-top: 16px; padding: 12px 16px; background: #feebc8; border-left: 4px solid var(--warning); color: #7b341e; border-radius: 4px; font-size: 13px; }}
+    .btn.active {{ background: #1a365d; box-shadow: 0 0 0 2px #63b3ed; }}
+    .btn-sec {{ background: #4a5568; }}
+    .slider-box {{ display: flex; align-items: center; gap: 8px; margin-left: auto; font-size: 12px; font-weight: 600; color: #4a5568; }}
+    .slider-box input {{ width: 140px; cursor: pointer; }}
+
+    /* Simulator Arena */
+    .simulator-stage {{ position: relative; width: 100%; height: 520px; border: 2px solid #a0aec0; border-radius: 8px; overflow: hidden; background: #ffffff; transition: 0.3s; }}
+    .layer-tag {{ position: absolute; top: 8px; left: 8px; z-index: 10; background: rgba(0,0,0,0.75); color: #fff; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 3px; font-family: monospace; }}
+    
+    /* Overlay Mode */
+    .mode-overlay .frame-wrapper {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }}
+    .mode-overlay .target-iframe {{ width: 100%; height: 100%; border: none; }}
+    .mode-overlay .decoy-overlay {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(247, 250, 252, 0.40); z-index: 2; display: flex; align-items: center; justify-content: center; }}
+    
+    /* Split Mode */
+    .mode-split {{ display: flex; }}
+    .mode-split .frame-wrapper {{ width: 50%; height: 100%; position: relative; border-left: 2px dashed #cbd5e0; order: 2; }}
+    .mode-split .target-iframe {{ width: 100%; height: 100%; border: none; }}
+    .mode-split .decoy-overlay {{ width: 50%; height: 100%; position: relative; background: #f7fafc; display: flex; align-items: center; justify-content: center; order: 1; }}
+
+    /* Frame Only Mode */
+    .mode-frame .frame-wrapper {{ width: 100%; height: 100%; position: relative; }}
+    .mode-frame .target-iframe {{ width: 100%; height: 100%; border: none; }}
+    .mode-frame .decoy-overlay {{ display: none; }}
+
+    .decoy-card {{ background: rgba(255, 255, 255, 0.98); border: 2px solid #cbd5e0; border-radius: 12px; padding: 24px 32px; text-align: center; box-shadow: 0 4px 16px rgba(0,0,0,0.12); max-width: 440px; }}
+    .decoy-icon {{ font-size: 32px; margin-bottom: 6px; }}
+    .decoy-card h2 {{ font-size: 18px; color: #2d3748; margin-bottom: 6px; }}
+    .decoy-card p {{ font-size: 13px; color: #4a5568; margin-bottom: 14px; }}
+    .decoy-button {{ background: linear-gradient(135deg, #e53e3e, #dd6b20); color: white; border: none; padding: 14px 28px; font-size: 14px; font-weight: 800; border-radius: 6px; cursor: pointer; box-shadow: 0 3px 10px rgba(229,62,62,0.3); transition: transform 0.1s; letter-spacing: 0.5px; }}
+    .decoy-button:active {{ transform: scale(0.97); }}
+    .decoy-hint {{ font-size: 11px; color: #718096; margin-top: 10px; font-style: italic; }}
+
+    /* Click Alert */
+    .click-alert {{ display: none; margin-top: 14px; padding: 14px 18px; background: #fffaf0; border: 1px solid #fbd38d; border-left: 5px solid var(--warning); border-radius: 6px; }}
+    .telemetry-header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }}
+    .telemetry-header h4 {{ color: #c05621; font-size: 14px; }}
+    .click-counter {{ background: #c05621; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700; }}
+    .coord {{ font-family: monospace; font-weight: 700; color: #2b6cb0; }}
 
     /* Markdown Export */
-    .report-box {{ width: 100%; height: 400px; background: #1a202c; color: #e2e8f0; font-family: Consolas, monospace; font-size: 12px; padding: 16px; border-radius: 6px; border: none; resize: vertical; }}
+    .report-box {{ width: 100%; height: 380px; background: #1a202c; color: #e2e8f0; font-family: Consolas, monospace; font-size: 12px; padding: 16px; border-radius: 6px; border: none; resize: vertical; }}
 </style>
 </head>
 <body>
@@ -835,9 +895,9 @@ def generate_poc_report(raw_url, final_url, ip, status, latency, findings, heade
     <div class="header-bar">
         <div class="header-title">
             <h1>Web Security & Clickjacking Assessment</h1>
-            <span class="badge" style="background: {theme_color}; font-size: 13px; padding: 6px 14px;">{risk_label} POSTURE</span>
+            <span class="badge" style="background: {theme_color}; font-size: 13px; padding: 5px 12px;">{risk_label} POSTURE</span>
         </div>
-        <p style="color: var(--text-muted); font-size: 14px;">Target Audit: <strong>{final_url}</strong></p>
+        <p style="color: var(--text-muted); font-size: 13px;">Target Audit: <strong>{final_url}</strong></p>
         <div class="meta-grid">
             <div class="meta-item"><div class="label">Host IP</div><div class="val">{ip}</div></div>
             <div class="meta-item"><div class="label">Risk Score</div><div class="val" style="color: {theme_color};">{score}</div></div>
@@ -846,15 +906,19 @@ def generate_poc_report(raw_url, final_url, ip, status, latency, findings, heade
         </div>
     </div>
 
+    <!-- Navigation Tabs (Clickjacking PoC Active by Default) -->
     <div class="tab-nav">
-        <button class="tab-btn active" onclick="openTab('tab-findings')">Vulnerability Findings ({len(findings)})</button>
-        <button class="tab-btn" onclick="openTab('tab-headers')">HTTP Headers Audit</button>
-        {cj_tab_btn}
-        <button class="tab-btn" onclick="openTab('tab-report')">Export Bug Bounty Report</button>
+        <button class="tab-btn active" onclick="openTab(this, 'tab-poc')">🎯 Live Clickjacking PoC (Button Demo)</button>
+        <button class="tab-btn" onclick="openTab(this, 'tab-findings')">🔍 Vulnerability Findings ({len(findings)})</button>
+        <button class="tab-btn" onclick="openTab(this, 'tab-headers')">📊 HTTP Headers Audit</button>
+        <button class="tab-btn" onclick="openTab(this, 'tab-report')">📋 Export Bug Bounty Report</button>
     </div>
 
+    <!-- PoC Tab (Active By Default) -->
+    {cj_tab_content}
+
     <!-- Findings Tab -->
-    <div id="tab-findings" class="tab-content active">
+    <div id="tab-findings" class="tab-content">
         {findings_html if findings else '<div class="card"><div class="card-body">No vulnerabilities detected. All verified checks passed.</div></div>'}
     </div>
 
@@ -872,40 +936,64 @@ def generate_poc_report(raw_url, final_url, ip, status, latency, findings, heade
         </div>
     </div>
 
-    <!-- PoC Tab -->
-    {cj_tab_content}
-
     <!-- Report Tab -->
     <div id="tab-report" class="tab-content">
         <div style="margin-bottom: 12px;">
-            <button class="btn" onclick="copyReport()">Copy Report to Clipboard</button>
+            <button class="btn" onclick="copyReport()">📋 Copy Report to Clipboard</button>
         </div>
         <textarea id="rawReport" class="report-box" readonly>{md_report}</textarea>
     </div>
 </div>
 
 <script>
-    function openTab(id) {{
+    let clickCount = 0;
+
+    function openTab(btn, id) {{
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
         document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-        event.target.classList.add('active');
+        btn.classList.add('active');
         document.getElementById(id).classList.add('active');
     }}
+
     function toggleCard(id) {{
-        const b = document.getElementById('card-' + id);
-        b.style.display = b.style.display === 'none' ? 'block' : 'none';
+        const el = document.getElementById('card-' + id);
+        if (el) {{
+            el.style.display = el.style.display === 'none' ? 'block' : 'none';
+        }}
     }}
+
+    function setMode(mode, btn) {{
+        document.querySelectorAll('.btn-mode').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const stage = document.getElementById('simulatorStage');
+        stage.className = 'simulator-stage mode-' + mode;
+    }}
+
     function adjustOpacity(val) {{
         document.getElementById('opacityVal').innerText = val + '%';
-        document.getElementById('decoyOverlay').style.background = 'rgba(240, 244, 248, ' + (val/100) + ')';
+        const overlay = document.getElementById('decoyOverlay');
+        overlay.style.background = 'rgba(247, 250, 252, ' + (val / 100) + ')';
     }}
-    function recordClick() {{
+
+    function recordClick(e) {{
+        clickCount++;
+        document.getElementById('clickCounter').innerText = 'Total Clicks: ' + clickCount;
+        document.getElementById('clickX').innerText = e.pageX;
+        document.getElementById('clickY').innerText = e.pageY;
+        
+        const rect = document.getElementById('simulatorStage').getBoundingClientRect();
+        const relX = Math.round(e.clientX - rect.left);
+        const relY = Math.round(e.clientY - rect.top);
+        document.getElementById('clickRel').innerText = relX + 'px, ' + relY + 'px';
+        
         document.getElementById('clickAlert').style.display = 'block';
     }}
+
     function reloadIframe() {{
         const f = document.getElementById('targetFrame');
         if (f) f.src = f.src;
     }}
+
     function copyReport() {{
         const t = document.getElementById('rawReport');
         t.select();
