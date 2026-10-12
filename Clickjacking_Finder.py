@@ -7,6 +7,7 @@ import sys
 import ssl
 import socket
 import json
+import re
 import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.request import urlopen, Request
@@ -42,19 +43,23 @@ RS  = '\033[0m'    # Reset
 RISK_C = {'CRITICAL': R, 'HIGH': R, 'MEDIUM': Y, 'LOW': C, 'INFO': B}
 RISK_S = {'CRITICAL': 5, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1, 'INFO': 0}
 
-BANNER = rf"""{C}{BO}
-  ____     _   _____ 
- / ___|   | | |  ___|
-| |    _  | | | |_   
-| |___| |_| | |  _|  
- \____|\___/  |_|    
-{M}+====================================================+
-|  {Y}CLICKJACKING FINDER (CJF) v1.0{M}                    |
-|  {B}[*] Author  : {G}AVII-VERSE{M}                            |
-|  {B}[*] Mode    : {G}Full-Spectrum Vulnerability Auditor{M}    |
-|  {B}[*] Engine  : {G}Multi-Threaded Security Scanner{M}        |
-+====================================================+{RS}
-"""
+def strip_ansi(s):
+    return re.sub(r'\x1b\[[0-9;]*m', '', str(s))
+
+def print_cyber_box(title, lines, width=68, color=M):
+    top = f"{color}+" + ("=" * (width - 2)) + f"+{RS}"
+    bot = f"{color}+" + ("=" * (width - 2)) + f"+{RS}"
+    print(top)
+    if title:
+        vis_t = len(strip_ansi(title))
+        pad_t = width - 4 - vis_t
+        print(f"{color}|{RS}  {title}" + (" " * max(0, pad_t)) + f"{color}|{RS}")
+        print(f"{color}+" + ("-" * (width - 2)) + f"+{RS}")
+    for l in lines:
+        vis = len(strip_ansi(l))
+        pad = width - 4 - vis
+        print(f"{color}|{RS}  {l}" + (" " * max(0, pad)) + f"{color}|{RS}")
+    print(bot)
 
 THREADS = 5
 TIMEOUT = 8
@@ -699,15 +704,41 @@ def get_overall_risk(score):
 # ═══════════════════════════════════════════════════
 
 def print_banner():
-    print(BANNER)
+    c = f'{C}{BO}'
+    j = f'{G}{BO}'
+    f = f'{M}{BO}'
+    
+    print(rf"""
+  {c}██████╗       {j}██╗  {f}███████╗
+ {c}██╔════╝       {j}██║  {f}██╔════╝
+ {c}██║       ██╗  {j}██║  {f}█████╗  
+ {c}██║       ██║  {j}██║  {f}██╔══╝  
+ {c}╚██████╗  ╚█████╔╝  {f}██║     
+  {c}╚═════╝   ╚════╝   {f}╚═╝     {RS}""")
+    
+    lines = [
+        f"{Y}{BO}CLICKJACKING FINDER (CJF) v1.0{RS} — {W}{BO}Security Audit Suite{RS}",
+        f"{C}[*]{RS} {BO}Developer  :{RS} {G}AVII-VERSE{RS} ({W}github.com/AVII-VERSE/CJF{RS})",
+        f"{C}[*]{RS} {BO}Framework  :{RS} {W}High-Performance Multi-Threaded Engine{RS}",
+        f"{C}[*]{RS} {BO}Audit Scope:{RS} {W}Clickjacking • CORS • HSTS • CSP • Secrets • SSL{RS}",
+        f"{C}[*]{RS} {BO}PoC Engine :{RS} {G}Interactive UI Redressing Simulator + Live Demos{RS}",
+    ]
+    print_cyber_box("", lines, width=68, color=M)
+    print()
 
 def print_target_result(idx, total, raw_url, final_url, ip, status, latency, findings, err):
-    div = "=" * 64
-    sub = "-" * 64
-    print(f"\n{C}{BO}{div}{RS}")
-    print(f"{W}{BO}[{idx}/{total}] TARGET:{RS} {C}{BO}{raw_url}{RS}")
-    print(f"{C}{BO}{div}{RS}")
+    width = 68
+    top = f"{C}+" + ("=" * (width - 2)) + f"+{RS}"
+    bot = f"{C}+" + ("=" * (width - 2)) + f"+{RS}"
     
+    print()
+    print(top)
+    title = f"{W}{BO}[{idx}/{total}] TARGET:{RS} {C}{BO}{raw_url}{RS}"
+    vis = len(strip_ansi(title))
+    pad = width - 4 - vis
+    print(f"{C}|{RS}  {title}" + (" " * max(0, pad)) + f"{C}|{RS}")
+    print(bot)
+
     if err:
         print(f"  {R}[ERROR]{RS} Unable to connect to host: {err}\n")
         return
@@ -718,7 +749,7 @@ def print_target_result(idx, total, raw_url, final_url, ip, status, latency, fin
     print(f"  {DM}Address :{RS} {W}{ip}{RS} | {DM}Status :{RS} {G}{status} OK{RS} | {DM}Latency :{RS} {latency}ms")
     print(f"  {DM}Endpoint:{RS} {final_url}")
     print(f"  {DM}Posture :{RS} {risk_color}{BO}{risk_label}{RS} (Score: {score}) | {W}{len(findings)} Total Finding(s){RS}")
-    print(f"{DM}{sub}{RS}")
+    print(f"  {DM}{'-' * (width - 4)}{RS}")
 
     if not findings:
         print(f"  {G}{BO}[PASS]{RS} No critical misconfigurations detected on checked endpoints.\n")
@@ -1258,17 +1289,23 @@ def generate_poc_report(raw_url, final_url, ip, status, latency, findings, heade
 # ═══════════════════════════════════════════════════
 
 def serve_preview(port=8080):
-    print(f"\n{C}{BO}[*] Launching local HTTP preview server on port {port}...{RS}")
-    print(f"{G}[*] Serving at http://127.0.0.1:{port}/{RS}")
-    print(f"{DM}[*] Press Ctrl+C to terminate the local preview server.{RS}\n")
+    lines = [
+        f"{G}{BO}[+] Local Preview URL :{RS} {C}{BO}http://127.0.0.1:{port}/{RS}",
+        f"{W}[+] Serving Directory  :{RS} {os.getcwd()}",
+        f"{W}[+] Browser Status     :{RS} {G}Auto-launched in default browser{RS}",
+        f"{Y}[!] Server Status      :{RS} {Y}Active (Press Ctrl+C to terminate){RS}",
+    ]
+    print()
+    print_cyber_box(f"{Y}{BO}INTERACTIVE POC LOCAL PREVIEW SERVER{RS}", lines, width=68, color=C)
+    print()
     try:
         webbrowser.open(f"http://127.0.0.1:{port}/")
         server = HTTPServer(('127.0.0.1', port), SimpleHTTPRequestHandler)
         server.serve_forever()
     except KeyboardInterrupt:
-        print(f"\n{Y}[*] Preview server stopped.{RS}")
+        print(f"\n{Y}[*] Preview server stopped successfully.{RS}\n")
     except Exception as e:
-        print(f"{R}[!] Unable to launch preview server: {e}{RS}")
+        print(f"{R}[!] Unable to launch preview server: {e}{RS}\n")
 
 # ═══════════════════════════════════════════════════
 #  FILE READER & CLI ENTRY
@@ -1349,16 +1386,16 @@ def main():
             summary_data.append((raw, 0, 0))
 
     # ── FINAL AUDIT SUMMARY MATRIX ──
-    div = "=" * 64
-    print(f"{C}{BO}{div}{RS}")
-    print(f"{C}{BO}  FINAL AUDIT SUMMARY MATRIX{RS}")
-    print(f"{C}{BO}{div}{RS}")
-    print(f"  {'TARGET':<35} | {'ISSUES':<8} | {'RISK SCORE':<10}")
-    print(f"  {'-'*35}-+-{'-'*8}-+-{'-'*10}")
-    for target, count, score in summary_data:
-        rl, rc = get_overall_risk(score)
-        print(f"  {target:<35} | {count:<8} | {rc}{score} ({rl}){RS}")
-    print(f"{C}{BO}{div}{RS}\n")
+    width = 68
+    print()
+    print_cyber_box(f"{Y}{BO}FINAL AUDIT SUMMARY MATRIX{RS}", [
+        f"{W}{BO}{'TARGET':<35} | {'ISSUES':<8} | {'RISK SCORE':<12}{RS}",
+        f"{DM}{'-'*35}-+-{'-'*8}-+-{'-'*12}{RS}"
+    ] + [
+        f"{t:<35} | {c:<8} | {get_overall_risk(sc)[1]}{sc} ({get_overall_risk(sc)[0]}){RS}"
+        for t, c, sc in summary_data
+    ], width=width, color=C)
+    print()
     print(f"{G}[*] Tip: Run `python Clickjacking_Finder.py --serve` to view interactive PoCs in your browser.{RS}\n")
 
 if __name__ == '__main__':
